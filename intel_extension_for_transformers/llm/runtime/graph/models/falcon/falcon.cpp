@@ -43,7 +43,7 @@
 //
 
 static bool falcon_model_eval_internal(model_context& lctx, const model_token* tokens, const int n_tokens,
-                                     const int n_past, const int n_threads) {
+                                       const int n_past, const int n_threads) {
   // // enforce that the first token is BOS
   // if (n_past == 0 && tokens[0] != model_token_bos()) {
   //   fprintf(stderr, "%s: first token must be BOS\n", __func__);
@@ -84,6 +84,9 @@ static bool falcon_model_eval_internal(model_context& lctx, const model_token* t
   // otherwise, the threads are spin-lock waiting for the BLAS calls and are degrading the performance
   ne_cgraph gf = {};
   gf.n_threads = N >= 32 && ne_cpu_has_blas() ? 1 : n_threads;
+
+  const bool kv_mem_jblas = kv_self.k->type == NE_TYPE_JBLAS;
+  NE_ASSERT(("jblas managed kv-cache is not yet supported; use `--memory-f16 / --memory-f32` instead", kv_mem_jblas));
 
   struct ne_tensor* embd = d_ne_new_tensor_1d(ctx0, NE_TYPE_I32, N);
   ne_set_name(embd, "embd");
@@ -133,15 +136,14 @@ static bool falcon_model_eval_internal(model_context& lctx, const model_token* t
         // head_dim, 1 (head_num), N --> N, head_dim, 1 (head_num)
         struct ne_tensor* Vcur_permuted = ne_permute(ctx0, Vcur, 1, 2, 0, 3);
 
-        struct ne_tensor* k =
-            ne_view_3d(ctx0, kv_self.k, head_dim, N, 1, ne_element_size(kv_self.k) * head_dim,
-                       ne_element_size(kv_self.k) * head_dim * n_ctx,
-                       il * n_ctx * ne_element_size(kv_self.k) * head_dim +
-                           n_past * ne_element_size(kv_self.k) * head_dim);
-        struct ne_tensor* v = ne_view_3d(
-            ctx0, kv_self.v, N, head_dim, 1, n_ctx * ne_element_size(kv_self.v),
-            n_ctx * ne_element_size(kv_self.v) * head_dim,
-            il * n_ctx * ne_element_size(kv_self.v) * head_dim + n_past * ne_element_size(kv_self.v));
+        struct ne_tensor* k = ne_view_3d(
+            ctx0, kv_self.k, head_dim, N, 1, ne_element_size(kv_self.k) * head_dim,
+            ne_element_size(kv_self.k) * head_dim * n_ctx,
+            il * n_ctx * ne_element_size(kv_self.k) * head_dim + n_past * ne_element_size(kv_self.k) * head_dim);
+        struct ne_tensor* v =
+            ne_view_3d(ctx0, kv_self.v, N, head_dim, 1, n_ctx * ne_element_size(kv_self.v),
+                       n_ctx * ne_element_size(kv_self.v) * head_dim,
+                       il * n_ctx * ne_element_size(kv_self.v) * head_dim + n_past * ne_element_size(kv_self.v));
 
         ne_build_forward_expand(&gf, ne_cpy(ctx0, Kcur_permuted, k));
         ne_build_forward_expand(&gf, ne_cpy(ctx0, Vcur_permuted, v));
@@ -150,10 +152,9 @@ static bool falcon_model_eval_internal(model_context& lctx, const model_token* t
       // Q = Qcur.contiguous().view(n_embd/n_head, n_head, N).permute(0, 2, 1, 3)
       struct ne_tensor* Q = ne_permute(ctx0, Qcur, 0, 2, 1, 3);
 
-      struct ne_tensor* K =
-          ne_view_3d(ctx0, kv_self.k, head_dim, N + n_past, 1, ne_element_size(kv_self.k) * head_dim,
-                     ne_element_size(kv_self.k) * head_dim * n_ctx,
-                     il * n_ctx * ne_element_size(kv_self.k) * head_dim * 1);
+      struct ne_tensor* K = ne_view_3d(ctx0, kv_self.k, head_dim, N + n_past, 1, ne_element_size(kv_self.k) * head_dim,
+                                       ne_element_size(kv_self.k) * head_dim * n_ctx,
+                                       il * n_ctx * ne_element_size(kv_self.k) * head_dim * 1);
 
       // K * Q
       struct ne_tensor* KQ = ne_mul_mat(ctx0, K, Q);
@@ -168,10 +169,9 @@ static bool falcon_model_eval_internal(model_context& lctx, const model_token* t
       struct ne_tensor* KQ_soft_max = ne_soft_max_inplace(ctx0, KQ_masked);
 
       // V_trans = Vmem.view(n_embd/n_head, n_head, n_past + N).permute(1, 2, 0, 3).contiguous()
-      struct ne_tensor* V =
-          ne_view_3d(ctx0, kv_self.v, N + n_past, head_dim, 1, ne_element_size(kv_self.v) * n_ctx,
-                     ne_element_size(kv_self.v) * n_ctx * head_dim,
-                     il * n_ctx * ne_element_size(kv_self.v) * head_dim * 1);
+      struct ne_tensor* V = ne_view_3d(ctx0, kv_self.v, N + n_past, head_dim, 1, ne_element_size(kv_self.v) * n_ctx,
+                                       ne_element_size(kv_self.v) * n_ctx * head_dim,
+                                       il * n_ctx * ne_element_size(kv_self.v) * head_dim * 1);
 
       // KQV = transpose(V) * KQ_soft_max
       struct ne_tensor* KQV = ne_mul_mat(ctx0, V, KQ_soft_max);

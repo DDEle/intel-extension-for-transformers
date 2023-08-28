@@ -439,13 +439,14 @@ static const char* NE_OP_LABEL[NE_OP_COUNT] = {
     "FFN_GeLU",
     "FFN_ADD_GeLU",
     "FLASH_ATTN",
+    "FLASH_ATTN_KV_UPDATE",
     "FLASH_FF",
 
     "MAP_UNARY",
     "MAP_BINARY",
 };
 
-static_assert(NE_OP_COUNT == 56, "NE_OP_COUNT != 56");
+static_assert(NE_OP_COUNT == 57, "NE_OP_COUNT != 57");
 
 static const char* NE_OP_SYMBOL[NE_OP_COUNT] = {
     "none",
@@ -504,6 +505,7 @@ static const char* NE_OP_SYMBOL[NE_OP_COUNT] = {
     "ffn_gelu(x)",
     "ffn_gelu_with_bias(x)",
     "flash_attn(x)",
+    "flash_attn_kv_update(x)",
     "flash_ff(x)",
 
     "f(x)",
@@ -2973,14 +2975,17 @@ struct ne_tensor* ne_flash_attn(struct ne_context* ctx, struct ne_tensor* q, str
                                 float scale, bool masked) {
   NE_ASSERT(ne_can_mul_mat(k, q));
   int batch = q->ne[3];
-  int headsize = q->ne[0];
   int headnum = q->ne[2];
   int seq_cur = q->ne[1];
+  int headsize = q->ne[0];
   int seq_all = k->ne[1];
-  int seq_past = seq_all - seq_cur;
+  // int seq_past = seq_all - seq_cur;
+  NE_ASSERT(headsize == k->ne[0]);
   NE_ASSERT(headsize == v->ne[1]);
   NE_ASSERT(seq_all == v->ne[0]);
+  NE_ASSERT(headnum == k->ne[2]);
   NE_ASSERT(headnum == v->ne[2]);
+  NE_ASSERT(batch == k->ne[3]);
   NE_ASSERT(batch == v->ne[3]);
   bool is_node = true;
   struct ne_tensor* result = ne_new_tensor_4d(ctx, NE_TYPE_F32, headsize, headnum, seq_cur, batch, NE_SIZE_CALC);
@@ -2996,6 +3001,30 @@ struct ne_tensor* ne_flash_attn(struct ne_context* ctx, struct ne_tensor* q, str
   *(float*)result->padding = scale;
   *(bool*)&result->padding[sizeof(scale)] = masked;
   return result;
+}
+
+// ne_flash_attn_kv_update
+struct ne_tensor* ne_flash_attn_kv_update(struct ne_context* ctx, struct ne_tensor* cache, struct ne_tensor* cur,
+                                          int n_past, bool is_v) {
+  NE_ASSERT(!(cache->grad || cur->grad));  // backward not implemented
+  // make a view of the destination
+  struct ne_tensor* result = ne_view_tensor(ctx, cache);
+
+  result->op = NE_OP_FLASH_ATTN_KV_UPDATE;
+  result->grad = NULL;
+  result->src0 = cache;
+  result->src1 = cur;
+  *(int*)result->padding = n_past;
+  *(bool*)&result->padding[sizeof(n_past)] = is_v;
+  return result;
+}
+struct ne_tensor* ne_flash_attn_update_k(struct ne_context* ctx, struct ne_tensor* cache, struct ne_tensor* cur,
+                                         int n_past) {
+  return ne_flash_attn_kv_update(ctx, cache, cur, n_past, false);
+}
+struct ne_tensor* ne_flash_attn_update_v(struct ne_context* ctx, struct ne_tensor* cache, struct ne_tensor* cur,
+                                         int n_past) {
+  return ne_flash_attn_kv_update(ctx, cache, cur, n_past, true);
 }
 
 // ne_flash_ff
@@ -5839,7 +5868,6 @@ static void ne_compute_forward_mul_mat_f16_f32(const struct ne_compute_params* p
   const size_t nb2 = dst->nb[2];
   const size_t nb3 = dst->nb[3];
 
-
   const int ith = params->ith;
   const int nth = params->nth;
 
@@ -6244,8 +6272,8 @@ static void ne_compute_forward_mul_mat_bias_q_f32_jblas(const struct ne_compute_
     return;
   }
   const bool boardcast_bias = bias->ne[1] == 1;
-  jblas_fusion_add_f32f32_forward((float*)src1->data, src0->data, (float*)bias->data, (float*)dst->data, ne1, ne0,
-                                      ne10, ne10, ne0, boardcast_bias);
+  jblas_fusion_add_f32f32_forward((float*)src1->data, src0->data, (float*)bias->data, (float*)dst->data, ne1, ne0, ne10,
+                                  ne10, ne0, boardcast_bias);
 }
 
 static void ne_compute_forward_mul_mat_bias(const struct ne_compute_params* params, const struct ne_tensor* src0,
@@ -6292,7 +6320,7 @@ static void ne_compute_forward_ffn_silu(const struct ne_compute_params* params, 
   const int fmid = w1->ne[1];
   const int seq = dst->ne[1];
   jblas_fusion_FFN_SiLu_f32f32_forward((float*)src->data, w1->data, w2->data, w3->data, (float*)tmp->data,
-                                        (float*)tmp1->data, (float*)dst->data, seq, fin, fmid, fout);
+                                       (float*)tmp1->data, (float*)dst->data, seq, fin, fmid, fout);
 }
 
 static void ne_compute_forward_ffn_add_gelu(const struct ne_compute_params* params, const struct ne_tensor* src,
@@ -6312,7 +6340,7 @@ static void ne_compute_forward_ffn_add_gelu(const struct ne_compute_params* para
   const int seq = dst->ne[1];
   const bool boardcast_bias = b1->ne[1] == 1 || b2->ne[1] == 1;
   jblas_fusion_FFN_Add_GeLu_f32f32_forward((float*)src->data, w1->data, w2->data, (float*)b1->data, (float*)b2->data,
-                                            (float*)tmp->data, (float*)dst->data, seq, fin, fmid, fout, boardcast_bias);
+                                           (float*)tmp->data, (float*)dst->data, seq, fin, fmid, fout, boardcast_bias);
 }
 
 static void ne_compute_forward_ffn_gelu(const struct ne_compute_params* params, const struct ne_tensor* src,
@@ -6329,8 +6357,8 @@ static void ne_compute_forward_ffn_gelu(const struct ne_compute_params* params, 
   const int fout = dst->ne[0];
   const int fmid = w1->ne[1];
   const int seq = dst->ne[1];
-  jblas_fusion_FFN_GeLu_f32f32_forward((float*)src->data, w1->data, w2->data, (float*)tmp->data, (float*)dst->data,
-                                        seq, fin, fmid, fout);
+  jblas_fusion_FFN_GeLu_f32f32_forward((float*)src->data, w1->data, w2->data, (float*)tmp->data, (float*)dst->data, seq,
+                                       fin, fmid, fout);
 }
 
 // ne_compute_forward_scale
@@ -8452,6 +8480,67 @@ static void ne_compute_forward_flash_attn_f32_f16_f16(const struct ne_compute_pa
   jblas_fusion_attn_fp32_fp16_fp16_fp32_forward(&args);
 }
 
+static void ne_compute_forward_flash_attn_reordered(const struct ne_compute_params* params, const struct ne_tensor* q,
+                                                    const struct ne_tensor* k, const struct ne_tensor* v,
+                                                    const struct ne_tensor* tmp, struct ne_tensor* dst) {
+  if (params->type != NE_TASK_COMPUTE) return;
+  const int64_t headsize = q->ne[0];
+  const int64_t seq_cur = q->ne[1];
+  const int64_t headnum = q->ne[2];
+  const int64_t batch = q->ne[3];
+  const int64_t embedsize = headnum * headsize;
+  const int64_t seq_all = k->ne[1];
+  // const int64_t seq_past = seq_all - seq_cur;
+
+  float scale = *(float*)dst->padding;
+  bool mask = *(bool*)&dst->padding[sizeof(scale)];
+
+  NE_ASSERT(k->type == NE_TYPE_JBLAS && v->type == NE_TYPE_JBLAS);
+  ATTN_FWD_LAYOUT K_layout = *(ATTN_FWD_LAYOUT*)(&k->nb[0]);
+  ATTN_FWD_LAYOUT V_layout = *(ATTN_FWD_LAYOUT*)(&v->nb[0]);
+
+  jblas_reordered_attn_fp32_fp32_fwd_args_t args = {
+      .Q = (float*)q->data,
+      .K = (char*)k->data,
+      .V = (char*)v->data,
+      .dst = (float*)dst->data,
+      .Q_sc = 1.f,
+      .K_sc = 1.f,
+      .V_sc = 1.f,
+      .dst_sc = 1.f,
+      .tmp = tmp->data,
+      .QK_scale = scale,
+      .is_causal = mask,
+      .batch_size = batch,
+      .head_num = headnum,
+      .head_size = headsize,
+      .sl_q = seq_cur,
+      .sl_kv = seq_all,
+      .Q_layout = ATTN_FWD_LAYOUT_PLAIN,
+      .K_layout = K_layout,
+      .V_layout = V_layout,
+      .dst_layout = ATTN_FWD_LAYOUT_PLAIN,
+      .step_q_bs = seq_cur * embedsize,
+      .step_q_head_num = headsize,
+      .step_q_sl = embedsize,
+
+      .stride_k_bs = k->nb[3],
+      .stride_k_head_num = k->nb[2],
+      .stride_k_sl = k->nb[1],
+      .stride_k_head_size = 0,
+
+      .stride_v_bs = v->nb[3],
+      .stride_v_head_num = v->nb[2],
+      .stride_v_sl = 0,
+      .stride_v_head_size = v->nb[1],
+
+      .step_dst_bs = seq_cur * embedsize,
+      .step_dst_head_num = headsize,
+      .step_dst_sl = embedsize,
+  };
+  jblas_reordered_attn_fp32_forward(&args);
+}
+
 static void ne_compute_forward_flash_attn_f16(const struct ne_compute_params* params, const struct ne_tensor* q,
                                               const struct ne_tensor* k, const struct ne_tensor* v, const bool masked,
                                               struct ne_tensor* dst) {
@@ -8686,6 +8775,8 @@ static void ne_compute_forward_flash_attn(const struct ne_compute_params* params
     case NE_TYPE_F32: {
       if (k->type == NE_TYPE_F16) {
         ne_compute_forward_flash_attn_f32_f16_f16(params, q, k, v, tmp, dst);
+      } else if (k->type == NE_TYPE_JBLAS && v->type == NE_TYPE_JBLAS) {
+        ne_compute_forward_flash_attn_reordered(params, q, k, v, tmp, dst);
       } else {
         NE_ASSERT(false);
       }
@@ -8694,6 +8785,32 @@ static void ne_compute_forward_flash_attn(const struct ne_compute_params* params
       NE_ASSERT(false);
     } break;
   }
+}
+static void ne_compute_forward_flash_attn_kv_update(const struct ne_compute_params* params,
+                                                    const struct ne_tensor* cache, const struct ne_tensor* cur,
+                                                    struct ne_tensor* dst) {
+  if (params->type != NE_TASK_COMPUTE) return;
+  const int n_past = *(int*)dst->padding;
+  const bool is_v = *(bool*)&dst->padding[sizeof(n_past)];
+  NE_ASSERT(cur->type == NE_TYPE_F32);
+  jblas_fusion_attn_fp32_update_kv_args_t args = {
+      .src = cur->data,
+      .cache = cache->data,
+      .batch_size = cur->ne[3],
+      .head_num = cur->ne[1],
+      .head_size = cur->ne[0],
+      .seq_off = n_past,
+      .seq_size = cur->ne[2],
+      .seq_max = cache->ne[1],
+      .step_bs = cur->nb[3] / NE_TYPE_SIZE[cur->type],
+      .step_head_num = cur->nb[1] / NE_TYPE_SIZE[cur->type],
+      .step_seq = cur->nb[2] / NE_TYPE_SIZE[cur->type],
+      .step_head_size = cur->nb[0] / NE_TYPE_SIZE[cur->type],
+  };
+  if (is_v)
+    jblas_reordered_attn_fp32_update_v(&args);
+  else
+    jblas_reordered_attn_fp32_update_k(&args);
 }
 
 // ne_compute_forward_flash_ff
@@ -9120,6 +9237,9 @@ static void ne_compute_forward(struct ne_compute_params* params, struct ne_tenso
     } break;
     case NE_OP_FLASH_ATTN: {
       ne_compute_forward_flash_attn(params, tensor->src0, tensor->src1, tensor->opt[0], tensor->opt[1], tensor);
+    } break;
+    case NE_OP_FLASH_ATTN_KV_UPDATE: {
+      ne_compute_forward_flash_attn_kv_update(params, tensor->src0, tensor->src1, tensor);
     } break;
     case NE_OP_FLASH_FF: {
       ne_compute_forward_flash_ff(params, tensor->src0, tensor->src1, tensor->opt[0], tensor->opt[1], tensor->opt[2],
@@ -9613,6 +9733,7 @@ static void ne_compute_backward(struct ne_context* ctx, struct ne_tensor* tensor
     case NE_OP_CONV_1D_2S: {
       NE_ASSERT(false);  // TODO: not implemented
     } break;
+    case NE_OP_FLASH_ATTN_KV_UPDATE:
     case NE_OP_FLASH_ATTN: {
       NE_ASSERT(false);  // not supported
     } break;
@@ -10116,6 +10237,7 @@ void ne_graph_compute(struct ne_context* ctx, struct ne_cgraph* cgraph) {
 
           work_size = MAX(work_size, cur);
         } break;
+        case NE_OP_FLASH_ATTN_KV_UPDATE:
         case NE_OP_FLASH_ATTN: {
           node->n_tasks = 1;
           work_size = 0LL;
@@ -10404,9 +10526,9 @@ void ne_graph_profiling(const struct ne_cgraph* cgraph) {
     if (perf_total_per_op_us[i] == 0) {
       continue;
     }
-    NE_PRINT("perf_total_per_op_us[%16s] = %7.3f ms\n", NE_OP_LABEL[i], (double)perf_total_per_op_us[i] / 1000.0);
+    NE_PRINT("perf_total_per_op_us[%24s] = %7.3f ms\n", NE_OP_LABEL[i], (double)perf_total_per_op_us[i] / 1000.0);
   }
-  NE_PRINT("perf_total_per_op_us[%16s] = %7.3f ms\n", "INNER PRODUCT", (double)ip_duration / 1000.0);
+  NE_PRINT("perf_total_per_op_us[%24s] = %7.3f ms\n", "INNER PRODUCT", (double)ip_duration / 1000.0);
   NE_PRINT("========================================\n");
 }
 
@@ -10457,7 +10579,7 @@ void ne_graph_print(const struct ne_cgraph* cgraph) {
       continue;
     }
 
-    NE_PRINT("perf_total_per_op_us[%16s] = %7.3f ms\n", NE_OP_LABEL[i], (double)perf_total_per_op_us[i] / 1000.0);
+    NE_PRINT("perf_total_per_op_us[%24s] = %7.3f ms\n", NE_OP_LABEL[i], (double)perf_total_per_op_us[i] / 1000.0);
   }
 
   NE_PRINT("========================================\n");

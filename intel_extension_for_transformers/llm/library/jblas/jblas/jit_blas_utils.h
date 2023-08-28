@@ -29,6 +29,7 @@
 #define CompileAVX512F() (defined(__GNUC__) && (__GNUC__ >= 6))
 #define CompileAVX2() (defined(__GNUC__) && (__GNUC__ >= 5))
 #define CompileAMX() (defined(__GNUC__) && (__GNUC__ >= 11))
+#define CompileBF16Kernel() (defined(__GNUC__) && (__GNUC__ >= 10))
 #define CompileBF16() (defined(__GNUC__) && (__GNUC__ >= 13))
 #define CompileFP16() (defined(__GNUC__) && (__GNUC__ >= 13))
 #define CompileAMXBF16() (CompileAMX())

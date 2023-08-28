@@ -13,6 +13,7 @@
 //  limitations under the License.
 #pragma once
 #include <immintrin.h>
+#include <cassert>
 
 #include "jit_base.hpp"
 #include "jit_blas.h"
@@ -117,34 +118,44 @@ class ActivationBase {
   }
 };
 
-template <class _GemmCore_T, JBLAS_ISA ISA_T>
-class ActivationConverterFp32 {
+template <class _GemmCore_T, JBLAS_ISA ISA_T, typename SRC_T>
+class ActivationConverter {
  public:
-  using SrcType = float;
   using AType = typename _GemmCore_T::AType;
   struct Param {
-    const SrcType* A;
+    const SRC_T* A;
     int lda;
   };
-  ActivationConverterFp32() {}
+  ActivationConverter() {}
 
   JBLAS_CODE getActivation(AType** dstptr, int* dststep, const Param& _param, int m_size, int k_size, int m_offset,
                            int k_offset) {
-    auto aptr = const_cast<SrcType*>(_param.A);
+    auto aptr = const_cast<SRC_T*>(_param.A);
     auto k_pad = utils::padto(k_size, _GemmCore_T::KTILE);
     *dststep = k_pad;
-    if constexpr (std::is_same<AType, utils::bf16>::value) {
+    if constexpr (std::is_same_v<AType, utils::bf16> && std::is_same_v<SRC_T, float>) {
       return kernel::wrapper::Memcpy2DFp32CvtBf16::forward<ISA_T>(aptr + m_offset * _param.lda + k_offset, *dstptr,
-                                                                  m_size, k_size, _param.lda * sizeof(SrcType),
+                                                                  m_size, k_size, _param.lda * sizeof(SRC_T),
                                                                   k_pad * sizeof(AType), true);
-    } else if (std::is_same<AType, utils::fp16>::value) {
+    } else if constexpr (std::is_same_v<AType, utils::fp16> && std::is_same_v<SRC_T, float>) {
       return kernel::wrapper::Memcpy2DFp32CvtFp16::forward<ISA_T>(aptr + m_offset * _param.lda + k_offset, *dstptr,
-                                                                  m_size, k_size, _param.lda * sizeof(SrcType),
+                                                                  m_size, k_size, _param.lda * sizeof(SRC_T),
                                                                   k_pad * sizeof(AType), true);
+    } else if constexpr (std::is_same_v<AType, float> && std::is_same_v<SRC_T, utils::bf16>) {
+      return kernel::wrapper::Memcpy2DBf16CvtFp32::forward<ISA_T>(aptr + m_offset * _param.lda + k_offset, *dstptr,
+                                                                  m_size, k_size, _param.lda * sizeof(SRC_T),
+                                                                  k_pad * sizeof(AType), true);
+    } else {
+      assert(0);
     }
     return JblasNotSupport;
   }
 };
+
+template <class _GemmCore_T, JBLAS_ISA ISA_T>
+using ActivationConverterFp32 = ActivationConverter<_GemmCore_T, ISA_T, float>;
+template <class _GemmCore_T, JBLAS_ISA ISA_T>
+using ActivationConverterBf16 = ActivationConverter<_GemmCore_T, ISA_T, utils::bf16>;
 
 template <typename QT_T, typename ST_T>
 class StorageQuantActivation {

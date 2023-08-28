@@ -14,6 +14,7 @@
 #pragma once
 #include <array>
 
+#include "jblas/jit_blas.h"
 #include "jit_blas_utils.h"
 #include "kernel_avx2.h"
 #include "kernel_avx512f.h"
@@ -93,7 +94,8 @@ class Memcpy2DFp32CvtBf16 {
       return kernel::avx512f::fp32_cvt_bf16_2D_write_back(srcptr, dstptr, row, col, srcstride, dststride, zeropadding);
     }
 #endif
-    return kernel::ref::fp32_cvt_bf16_2D_write_back(srcptr, dstptr, row, col, srcstride, dststride, zeropadding);
+    return kernel::ref::dt_cvt_2D_write_back<float, utils::bf16>(srcptr, dstptr, row, col, srcstride, dststride,
+                                                                 zeropadding);
   }
 };
 
@@ -125,6 +127,23 @@ class Memcpy2DFp16CvtFp32 {
           dststride / sizeof(float), zeropadding);
     }
 #endif
+    return JblasNotSupport;
+  }
+};
+
+class Memcpy2DBf16CvtFp32 {
+ public:
+  template <JBLAS_ISA ISA_T>
+  static JBLAS_CODE forward(void* srcptr, void* dstptr, int row, int col, int srcstride, int dststride,
+                            bool zeropadding) {
+    if constexpr (ISA_T >= JblasAVX512F) {
+      return kernel::avx512f::bf16_cvt_fp32_2D_write_back(  //
+          (const utils::bf16*)srcptr, (float*)dstptr, row, col, srcstride / sizeof(utils::bf16),
+          dststride / sizeof(float), zeropadding);
+    } else {
+      return kernel::ref::dt_cvt_2D_write_back<utils::bf16, float>(srcptr, dstptr, row, col, srcstride, dststride,
+                                                                   zeropadding);
+    }
     return JblasNotSupport;
   }
 };
@@ -165,7 +184,7 @@ class QuantizeSignIntRowBlock {
                                    float* scales, int blocksize) {
 #if CompileAVX512F()
     if constexpr (utils::isa_base<ISA_T>::avx512f &&
-        S4_T != S4_FULLRANGE) {  // TODO(zhe): support simd version s4_fullrange quantization.
+                  S4_T != S4_FULLRANGE) {  // TODO(zhe): support simd version s4_fullrange quantization.
       return avx512f::quantize_f32_sign_int_rowblock<S4_T>(srcptr, dstptr, row, col, ld_src, ld_dst, scales, blocksize);
     }
 #endif

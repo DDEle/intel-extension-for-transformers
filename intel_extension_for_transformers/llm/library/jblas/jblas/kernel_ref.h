@@ -85,17 +85,18 @@ static inline JBLAS_CODE padding_trans_interleave(const T_SRC* src, T_DST* dst, 
   return JblasSuccess;
 }
 
-static inline JBLAS_CODE fp32_cvt_bf16_2D_write_back(const void* raw_srcptr, void* raw_dstptr, int row, int col,
-                                                     int srcstride, int dststride, bool zeropadding) {
+template <typename SRC_DT, typename DST_DT>
+static inline JBLAS_CODE dt_cvt_2D_write_back(const void* raw_srcptr, void* raw_dstptr, int row, int col, int srcstride,
+                                          int dststride, bool zeropadding) {
   for (int i = 0; i < row; i++) {
     int j = 0;
     for (; j < col; j++) {
-      const auto src = reinterpret_cast<const float*>(reinterpret_cast<const char*>(raw_srcptr) + i * srcstride);
-      const auto dst = reinterpret_cast<utils::bf16*>(reinterpret_cast<char*>(raw_dstptr) + i * dststride);
-      dst[j] = static_cast<utils::bf16>(src[j]);
+      const auto src = reinterpret_cast<const SRC_DT*>(reinterpret_cast<const char*>(raw_srcptr) + i * srcstride);
+      const auto dst = reinterpret_cast<DST_DT*>(reinterpret_cast<char*>(raw_dstptr) + i * dststride);
+      dst[j] = static_cast<DST_DT>(src[j]);
     }
     if (zeropadding) {
-      for (int bj = j * sizeof(utils::bf16); bj < dststride; bj++) {
+      for (int bj = j * sizeof(DST_DT); bj < dststride; bj++) {
         (reinterpret_cast<char*>(raw_dstptr) + i * dststride)[bj] = 0;
       }
     }

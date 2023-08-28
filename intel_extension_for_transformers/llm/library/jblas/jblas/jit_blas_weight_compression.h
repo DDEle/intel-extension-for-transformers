@@ -1083,8 +1083,7 @@ class PackedWeightParser {
           ptr->deserializeBuffer(rptr, memalloc);
           return ptr;
         }
-        case WeightCompType::WeightS8ScaleFp32PerChannelN:
-        {
+        case WeightCompType::WeightS8ScaleFp32PerChannelN: {
           auto ptr = new StorageWeightS8ScaleFp32PerChannelN(jblas::gemm::GemmCoreType::Undef);
           ptr->deserializeBuffer(rptr, memalloc);
           return ptr;
@@ -1211,6 +1210,7 @@ class GemmInterfaceKBlockPackWeight {
   using Config = typename _Launcher_T::ParallelConfig;
   using ActivationType = typename _Launcher_T::PrologueA;
   using WeightType = typename _Launcher_T::PrologueB;
+  using Epilogue = typename _Launcher_T::Epilogue;
   using GemmCore = typename _Launcher_T::GemmCore;
   using Parallel = _Parallel_T<GemmCore>;
 
@@ -1256,6 +1256,7 @@ class GemmInterfaceKblockParallelAB {
   using Config = typename _Launcher_T::ParallelConfig;
   using ActivationType = typename _Launcher_T::PrologueA;
   using WeightType = typename _Launcher_T::PrologueB;
+  using Epilogue = typename _Launcher_T::Epilogue;
   using GemmCore = typename _Launcher_T::GemmCore;
   using Parallel = _Parallel_T<GemmCore>;
 

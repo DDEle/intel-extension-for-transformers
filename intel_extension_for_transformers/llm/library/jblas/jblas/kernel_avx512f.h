@@ -16,6 +16,7 @@
 #include "kernel_ref.h"
 
 #include <array>
+#include <cstring>
 #if CompileAVX512F()
 #include <immintrin.h>
 #endif
@@ -859,6 +860,31 @@ static inline JBLAS_CODE fp16_cvt_fp32_2D_write_back(const utils::fp16* src_ptr,
       _mm512_mask_storeu_ps(dst + j, tail_mask,
                             _mm512_cvtxph_ps(_mm256_castsi256_ph(_mm256_maskz_loadu_epi16(tail_mask, src + j))));
     }
+    if (zeropadding && npadding) std::memset(dst + col, 0, npadding);
+  }
+  return JblasSuccess;
+#else
+  return JblasNotSupport;
+#endif
+}
+
+static inline JBLAS_CODE bf16_cvt_fp32_2D_write_back(const utils::bf16* src_ptr, float* dst_ptr, int row, int col,
+                                                     int src_step, int dst_step, bool zeropadding) {
+#if CompileBF16Kernel()
+  const int npadding = (dst_step - col) * sizeof(float);
+  constexpr int simd_proc_elt = 16;
+  auto col_body = col / simd_proc_elt * simd_proc_elt;
+  auto col_tail = col % simd_proc_elt;
+  const auto tail_mask = _cvtu32_mask16((1U << col_tail) - 1);
+  for (int i = 0; i < row; i++) {
+    auto src = const_cast<utils::bf16*>(src_ptr + i * src_step);
+    auto dst = dst_ptr + i * dst_step;
+    int j = 0;
+    for (; j < col_body; j += simd_proc_elt)
+      _mm512_storeu_ps(dst + j, _mm512_cvtpbh_ps((__m256bh)_mm256_loadu_ps(reinterpret_cast<float*>(src + j))));
+    if (col_tail > 0)
+      _mm512_mask_storeu_ps(dst + j, tail_mask,
+                            _mm512_cvtpbh_ps((__m256bh)_mm256_loadu_ps(reinterpret_cast<float*>(src + j))));
     if (zeropadding && npadding) std::memset(dst + col, 0, npadding);
   }
   return JblasSuccess;

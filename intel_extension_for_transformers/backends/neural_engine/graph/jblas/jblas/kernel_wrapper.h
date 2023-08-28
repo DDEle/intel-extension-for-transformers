@@ -86,20 +86,46 @@ class Memcpy2D {
 class Memcpy2DFp32CvtBf16 {
  public:
   template <JBLAS_ISA ISA_T>
-  static JBLAS_CODE forward(const void* srcptr, void* dstptr, int row, int col, int srcstride, int dststride) {
+  static JBLAS_CODE forward(const void* srcptr, void* dstptr, int row, int col, int srcstride, int dststride,
+                            bool zeropadding) {
 #if CompileAVX512F()
     if (utils::isa_base<ISA_T>::avx512f) {
-      return kernel::avx512f::fp32_cvt_bf16_2D_write_back(srcptr, dstptr, row, col, srcstride, dststride);
+      return kernel::avx512f::fp32_cvt_bf16_2D_write_back(srcptr, dstptr, row, col, srcstride, dststride, zeropadding);
     }
 #endif
-    for (int i = 0; i < row; i++) {
-      for (int j = 0; j < col; j++) {
-        const auto src = reinterpret_cast<const float*>(reinterpret_cast<const char*>(srcptr) + i * srcstride);
-        const auto dst = reinterpret_cast<utils::bf16*>(reinterpret_cast<char*>(dstptr) + i * dststride);
-        dst[j] = static_cast<utils::bf16>(src[j]);
-      }
+    return kernel::ref::fp32_cvt_bf16_2D_write_back(srcptr, dstptr, row, col, srcstride, dststride, zeropadding);
+  }
+};
+
+class Memcpy2DFp32CvtFp16 {
+ public:
+  template <JBLAS_ISA ISA_T>
+  static JBLAS_CODE forward(void* srcptr, void* dstptr, int row, int col, int srcstride, int dststride,
+                            bool zeropadding) {
+#if CompileFP16()
+    if (utils::isa_base<ISA_T>::avx512_fp16) {
+      return kernel::avx512f::fp32_cvt_fp16_2D_write_back((const float*)srcptr, (utils::fp16*)dstptr, row, col,
+                                                          srcstride / sizeof(float), dststride / sizeof(utils::fp16),
+                                                          zeropadding);
     }
-    return JblasSuccess;
+#endif
+    return JblasNotSupport;
+  }
+};
+
+class Memcpy2DFp16CvtFp32 {
+ public:
+  template <JBLAS_ISA ISA_T>
+  static JBLAS_CODE forward(void* srcptr, void* dstptr, int row, int col, int srcstride, int dststride,
+                            bool zeropadding) {
+#if CompileFP16()
+    if (utils::isa_base<ISA_T>::avx512_fp16) {
+      return kernel::avx512f::fp16_cvt_fp32_2D_write_back(  //
+          (const utils::fp16*)srcptr, (float*)dstptr, row, col, srcstride / sizeof(utils::fp16),
+          dststride / sizeof(float), zeropadding);
+    }
+#endif
+    return JblasNotSupport;
   }
 };
 

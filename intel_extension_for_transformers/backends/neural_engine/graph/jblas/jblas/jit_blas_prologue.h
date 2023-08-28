@@ -136,7 +136,11 @@ class ActivationConverterFp32 {
     if (std::is_same<AType, utils::bf16>::value) {
       return kernel::wrapper::Memcpy2DFp32CvtBf16::forward<ISA_T>(aptr + m_offset * _param.lda + k_offset, *dstptr,
                                                                   m_size, k_size, _param.lda * sizeof(SrcType),
-                                                                  k_pad * sizeof(AType));
+                                                                  k_pad * sizeof(AType), true);
+    } else if (std::is_same<AType, utils::fp16>::value) {
+      return kernel::wrapper::Memcpy2DFp32CvtFp16::forward<ISA_T>(aptr + m_offset * _param.lda + k_offset, *dstptr,
+                                                                  m_size, k_size, _param.lda * sizeof(SrcType),
+                                                                  k_pad * sizeof(AType), true);
     }
     return JblasNotSupport;
   }
@@ -507,7 +511,6 @@ class ActivationFp32SymS8Quantize {
     return JblasSuccess;
   }
 };
-
 
 template <typename T, JBLAS_ISA ISA_T>
 class WeightBase {

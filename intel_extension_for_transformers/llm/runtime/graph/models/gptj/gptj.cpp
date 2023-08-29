@@ -40,7 +40,7 @@
 #include "models/model_utils/util.h"
 
 #define MHA_FUSION 1
-#define MHA_FP16 1
+#define MHA_FP16 0
 
 // evaluate the transformer
 //

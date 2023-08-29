@@ -981,7 +981,7 @@ class ScaleTrackMax<ISA_T, int32_t, float> {
       int j = 0;
       auto v_max = _mm512_set1_ps(-INFINITY);
       for (; j < N_unmasked - 15; j += 16) {
-        const auto xs = _mm512_mul_ps(v_scale, _mm512_cvtepi32_ps(_mm512_loadu_epi32(src + i * src_step + j)));
+        const auto xs = _mm512_mul_ps(v_scale, _mm512_cvtepi32_ps(_mm512_loadu_si512(src + i * src_step + j)));
         v_max = _mm512_max_ps(v_max, xs);
         _mm512_storeu_ps(dst + i * p.ld_dst + j, xs);
       }
@@ -1117,6 +1117,7 @@ struct InplacePrecomputeMaxSoftmax<float, fp16> {
 };
 #endif
 
+#if CompileBF16()
 template <>
 struct InplacePrecomputeMaxSoftmax<float, bf16> {
   static void forward(int m_size, int n_size, int n_pad_size, bool is_causal, float* src, bf16* dst, const float* s_max,
@@ -1173,6 +1174,7 @@ struct InplacePrecomputeMaxSoftmax<float, bf16> {
     }
   }
 };
+#endif
 
 template <>
 struct InplacePrecomputeMaxSoftmax<float, uint8_t> {
@@ -1209,11 +1211,13 @@ struct InplacePrecomputeMaxSoftmax<float, uint8_t> {
         int jj = 0;
         for (; jj < curr_n_size / 16 * 16; jj += 16) {
           const auto v_softmax = _mm512_mul_ps(_mm512_loadu_ps(i_src + jj), v_scale);
-          _mm_storeu_epi8(i_dst + jj, _mm512_cvtusepi32_epi8(_mm512_cvtps_epu32(v_softmax)));
+          _mm_storeu_si128(reinterpret_cast<__m128i*>(i_dst + jj),
+                           _mm512_cvtusepi32_epi8(_mm512_cvtps_epu32(v_softmax)));
         }
         if (jj < curr_n_size) {
           const auto v_softmax = _mm512_mul_ps(_mm512_loadu_ps(i_src + jj), v_scale);
-          _mm_storeu_epi8(i_dst + jj, _mm512_maskz_cvtusepi32_epi8(v_mask, _mm512_cvtps_epu32(v_softmax)));
+          _mm_storeu_si128(reinterpret_cast<__m128i*>(i_dst + jj),
+                           _mm512_maskz_cvtusepi32_epi8(v_mask, _mm512_cvtps_epu32(v_softmax)));
           jj += 16;
         }
         if (jj < n_pad_size) memset(i_dst + jj, 0, sizeof(uint8_t) * (n_pad_size - jj));

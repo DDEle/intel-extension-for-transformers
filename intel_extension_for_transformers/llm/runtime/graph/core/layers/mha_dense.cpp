@@ -1067,6 +1067,7 @@ struct InplacePrecomputeMaxSoftmax {
     assert(false);
   }
 };
+#if CompileFP16()
 template <>
 struct InplacePrecomputeMaxSoftmax<float, fp16> {
   static void forward(int m_size, int n_size, int n_pad_size, bool is_causal, float* src, fp16* dst, const float* s_max,
@@ -1114,6 +1115,7 @@ struct InplacePrecomputeMaxSoftmax<float, fp16> {
     }
   }
 };
+#endif
 
 template <>
 struct InplacePrecomputeMaxSoftmax<float, bf16> {

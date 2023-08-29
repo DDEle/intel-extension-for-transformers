@@ -157,12 +157,10 @@ static bool gptj_model_eval_internal(model_context& lctx, const model_token* tok
       if (!kv_mem_jblas) {
         Vcur = ne_view_1d(ctx0, QKVcur, N * n_embd * batch_size, 2 * N * n_embd * batch_size * ne_element_size(QKVcur));
       } else {
-        Vcur = ne_rope_inplace(ctx0,
-                               ne_reshape_4d(ctx0,
-                                             ne_view_1d(ctx0, QKVcur, N * n_embd * batch_size,
-                                                        2 * N * n_embd * batch_size * ne_element_size(QKVcur)),
-                                             n_embd / n_head, n_head, N, batch_size),
-                               n_past, n_rot, 0);
+        Vcur = ne_reshape_4d(
+            ctx0,
+            ne_view_1d(ctx0, QKVcur, N * n_embd * batch_size, 2 * N * n_embd * batch_size * ne_element_size(QKVcur)),
+            n_embd / n_head, n_head, N, batch_size);
       }
 
     } else {

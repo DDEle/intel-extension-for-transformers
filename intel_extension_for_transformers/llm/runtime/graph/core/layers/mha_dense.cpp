@@ -47,6 +47,111 @@ constexpr bool MHA_PREFER_AVX512FP16 = true;
 
 namespace {
 using namespace jblas::utils;
+class MY_TOOLS {
+#ifdef WITH_GCC_FLAGS
+#pragma GCC push_options
+#pragma GCC optimize "no-strict-aliasing"
+#endif
+  static inline float make_fp32(uint16_t x) {
+    unsigned int y = static_cast<unsigned int>(x);
+    y = y << 16;
+    float* res = reinterpret_cast<float*>(&y);
+    return *res;
+  }
+
+  static inline uint16_t make_bf16(float x) {
+    int* res = reinterpret_cast<int*>(&x);
+    *res = *res >> 16;
+    return (uint16_t)*res;
+  }
+#ifdef WITH_GCC_FLAGS
+#pragma GCC pop_options
+#endif
+
+ public:
+  static void print_matrix(const float* d, int ld, int m, int n) {
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < n; j++) {
+        printf("%e ", d[i * ld + j]);
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  }
+  static void print_matrix(const int* d, int ld, int m, int n) {
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < n; j++) {
+        printf("%d ", d[i * ld + j]);
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  }
+  static void print_matrix(const int8_t* d, int ld, int m, int n) {
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < n; j++) {
+        printf("%hhd ", d[i * ld + j]);
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  }
+  static void print_matrix(const uint8_t* d, int ld, int m, int n) {
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < n; j++) {
+        printf("%hhu ", d[i * ld + j]);
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  }
+#if 1
+  static void print_matrix(const jblas::utils::bf16* d, int ld, int m, int n) {
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < n; j++) {
+        printf("%e ", static_cast<float>(d[i * ld + j]));
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  }
+  static void print_matrix(const jblas::utils::fp16* d, int ld, int m, int n) {
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < n; j++) {
+        printf("%e ", static_cast<float>(d[i * ld + j]));
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  }
+#endif
+#if 0
+  static void print_matrix(const bfloat16_t* d, int ld, int m, int n) {
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < n; j++) {
+        printf("%e ", static_cast<float>(d[i * ld + j]));
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  }
+#endif
+#if 1
+  static void print_matrix(const uint16_t* d, int ld, int m, int n) {
+    for (int i = 0; i < m; i++) {
+      for (int j = 0; j < n; j++) {
+        printf("%e ", make_fp32(d[i * ld + j]));
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  }
+#endif
+  static void print_text(const char* s) {
+    printf(s);
+    fflush(stdout);
+  }
+};
 
 template <typename Q_T, typename K_T, typename V_T, typename DST_T>
 struct attn_fwd_args_t {
@@ -571,6 +676,13 @@ class GemmLauncherBaseWeight                                            //
 
       this->mProB.getWeight(&bptr_cache, &bcache_step, _param.paramB, k_padded, blk_nsize, iterk,
                             _config.colidx + blk_n);
+
+      // static int xxx = 0;
+      // if (0 == xxx++) {
+      //   MY_TOOLS::print_text("\n\nlog0_kern_v\n");
+      //   MY_TOOLS::print_matrix(bptr_cache, bcache_step, k_padded, blk_nsize);
+      // }
+
       int bcache_stride = bcache_step * sizeof(BType);
       for (int i = 0; i < blk_msize; i += GemmCore::MTILE) {
         int m_remain = remainsize(i, blk_msize, GemmCore::MTILE);
@@ -582,6 +694,15 @@ class GemmLauncherBaseWeight                                            //
           AType* aptr_cache = tmpA;
           this->mProA.getActivation(&aptr_cache, &acache_step, _param.paramA, m_remain, k_paddedle,
                                     (blk_m + i + _config.rowidx), iterk);
+
+          // static int xxx = 0;
+          // if (0 == xxx++) {
+          //   MY_TOOLS::print_text("\n\nlog0_kern_q\n");
+          //   MY_TOOLS::print_matrix(aptr_cache, acache_step, m_remain, k_paddedle);
+          //   MY_TOOLS::print_text("\n\nlog0_kern_k\n");
+          //   MY_TOOLS::print_matrix(bptr_cache, bcache_step, k_padded, blk_nsize);
+          // }
+
           this->mGemmCore.forward(aptr_cache, bptr_cache, cptr_cache, m_remain, n_padded, k_paddedle,
                                   acache_step * sizeof(AType), bcache_stride, ccache_stride, iterk);
         }
@@ -839,6 +960,12 @@ class ScaleTrackMax<ISA_T, fp16, float> {
 #if MHA_2ND_EXP
     const auto v_scale = _mm512_set1_ps(p.scale);
 
+    // static int xxnkern_qk = 0;
+    // if (0 == xxnkern_qk++) {
+    //   MY_TOOLS::print_text("\n\nlog0_kern_qk\n");
+    //   MY_TOOLS::print_matrix(src, 0, 1, N);
+    // }
+
     for (int i = 0; i < M; ++i) {
       const auto N_unmasked =
           std::min(N, p.causal_offset < 0 ? INT32_MAX : i + M_offset - N_offset + p.causal_offset + 1);
@@ -859,6 +986,12 @@ class ScaleTrackMax<ISA_T, fp16, float> {
         j += 16;
       }
       dst_max[i] = std::max(dst_max[i], _mm512_reduce_max_ps(v_max));
+
+      // static int xxxxxx = 0;
+      // if (0 == xxxxxx++) {
+      //   MY_TOOLS::print_text("\n\nlog0_kern_qkscale\n");
+      //   MY_TOOLS::print_matrix(dst, 0, 1, N);
+      // }
 
       // if (j < jblas::utils::padto(N, 64))
       //   memset(dst + i * p.ld_dst + j, 0, sizeof(*dst) * (jblas::utils::padto(N, 64) - j));
@@ -1128,6 +1261,13 @@ struct InplacePrecomputeMaxSoftmax<float, bf16> {
       const auto curr_n_size = n_size + (is_causal ? ii : 0);
       const auto v_mask = _cvtu32_mask16((1U << (curr_n_size % 16)) - 1);
       const auto v_mask32 = _cvtu32_mask32((1U << (curr_n_size % 32)) - 1);
+
+      // static int xxnkern_qkscale = 0;
+      // if (0 == xxnkern_qkscale++) {
+      //   // if (ii == 0 && debug_print) {
+      //   MY_TOOLS::print_text("\n\nlog0_kern_qk_scale\n");
+      //   MY_TOOLS::print_matrix(i_src, 0, 1, ld_src);
+      // }
       {  // subtract max
         const auto row_max = _mm512_set1_ps(s_max[ii]);
         for (int jj = 0; jj < curr_n_size; jj += 16) {  // should be fine to do extra work on idx >= curr_n_size
@@ -1171,6 +1311,13 @@ struct InplacePrecomputeMaxSoftmax<float, bf16> {
         }
         if (jj < n_pad_size) memset(i_dst + jj, 0, sizeof(bf16) * (n_pad_size - jj));
       }
+
+      // static int xxxxxnkern_qkscale = 0;
+      // if (0 == xxxxxnkern_qkscale++) {
+      //   // if (ii == 0 && debug_print) {
+      //   MY_TOOLS::print_text("\n\nlog0_kern_qk_scale2\n");
+      //   MY_TOOLS::print_matrix(i_dst, 0, 1, ld_dst);
+      // }
     }
   }
 };
@@ -1185,6 +1332,14 @@ struct InplacePrecomputeMaxSoftmax<float, uint8_t> {
       const auto i_dst = dst + ii * ld_dst;
       const auto curr_n_size = n_size + (is_causal ? ii : 0);
       const uint16_t v_mask = _cvtu32_mask16((1U << (curr_n_size % 16)) - 1);
+
+      // static int xxnkern_qkscale = 0;
+      // if (0 == xxnkern_qkscale++) {
+      //   // if (ii == 0 && debug_print) {
+      //   MY_TOOLS::print_text("\n\nlog0_kern_qk_scale\n");
+      //   MY_TOOLS::print_matrix(i_src, 0, 1, ld_src);
+      // }
+
       {  // subtract max
         const auto row_max = _mm512_set1_ps(s_max[ii]);
         for (int jj = 0; jj < curr_n_size; jj += 16) {  // should be fine to do extra work on idx >= curr_n_size
@@ -1393,6 +1548,12 @@ class MHAStableInterface {
           InplacePrecomputeMaxSoftmax<float, PType>::forward(                 //
               m_size, unmasked_size_start, softmax_npad_size,                 // m / n
               p.is_causal, tmp_s, tmp_p, s_max, expsum, ld_tmp_s, ld_tmp_p);  //
+
+          // if (ihn == 0 && 0 == i_m && 0 == ibs) {
+          //   MY_TOOLS::print_text("\n\nlog0_kern_softmax\n");
+          //   for (int ii = 0; ii < 4 && ii < m_size; ++ii)
+          //     MY_TOOLS::print_matrix(tmp_p + ii * ld_tmp_p, 0, 1, unmasked_size_pad_pv);
+          // }
 
           const auto pv_scale = expsum;
           for (int i = 0; i < M_TILE; ++i) pv_scale[i] = p.V_sc / UINT8_MAX / expsum[i] / p.dst_sc;
@@ -1625,7 +1786,7 @@ void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& 
   const auto workspace_size = jblas_fusion_attn_workspace_size(&attn_shape);
   static std::mt19937 rng;
   static std::uniform_int_distribution<> dist;
-  init_vector(p.tmp, workspace_size, INT8_MIN - 1, INT8_MAX + 1, dist(rng));
+  // init_vector(p.tmp, workspace_size, INT8_MIN - 1, INT8_MAX + 1, dist(rng));
   std::fill_n(p.tmp, workspace_size, 'f');
   const bool IS_FP16BF16_GEMM = std::is_same<Q_T, float>::value && std::is_same<K_T, fp16>::value &&
                                 std::is_same<V_T, fp16>::value && std::is_same<DST_T, float>::value &&
@@ -1645,6 +1806,14 @@ void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& 
   const auto ROWPACK = p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4   ? 4
                        : p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2 ? 2
                                                                         : 0;
+  // static int xxx = 0;
+  // if (0 == xxx++) {
+  {
+    MY_TOOLS::print_text("\n\nlog0_ref_q\n");
+    MY_TOOLS::print_matrix(p.Q, p.step_q_sl, std::min(p.sl_q, 4), p.head_size);
+    // MY_TOOLS::print_text("\n\nlog0_ref_k\n");
+    // MY_TOOLS::print_matrix(p.K, 48, padto(p.head_size, 64) * 2, 48);
+  }
 
 #pragma omp parallel for collapse(3)
   for (int ibs = 0; ibs < p.batch_size; ++ibs)
@@ -1685,6 +1854,11 @@ void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& 
           row_max = std::max(row_max, curr_row[j]);
         }
 
+        // if (0 == ibs && 0 == ihn && 0 == i) {
+        //   MY_TOOLS::print_text("\n\nlog0_ref_QK_scale\n");
+        //   MY_TOOLS::print_matrix(curr_row.get(), 1, 1, unmasked);
+        // }
+
         // exp
         float exp_sum = 0.f;
         for (int j = 0; j < unmasked; ++j) {
@@ -1698,6 +1872,19 @@ void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& 
         } else {
           for (int j = 0; j < unmasked; ++j) curr_row[j] /= exp_sum;
         }
+
+        if (0 == ibs && 0 == ihn && i < 4) {
+          if (i == 0) MY_TOOLS::print_text("\n\nlog0_ref_softmax\n");
+          for (int ii = 0; ii < unmasked; ++ii) curr_row[i] = static_cast<float>(static_cast<bf16>(curr_row[i]));
+          MY_TOOLS::print_matrix(curr_row.get(), 1, 1, unmasked);
+        }
+
+        // if (0 == ibs && 0 == ihn && i < 4) {
+        //   const auto tmp = std::unique_ptr<float[]>(new float[unmasked]);
+        //   for (int j = 0; j < unmasked; ++j) tmp[j] = curr_row[j] * exp_sum * UINT8_MAX;
+        //   MY_TOOLS::print_text("\n\nlog0_ref_softmax_int8\n");
+        //   MY_TOOLS::print_matrix(tmp.get(), 1, 1, unmasked);
+        // }
 
         // P x V
         for (int j = 0; j < p.head_size; ++j) {
@@ -1719,6 +1906,10 @@ void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& 
           }
           dst_curr[j] = static_cast<DST_T>(dst_f32_val * p.V_sc / p.dst_sc);
         }
+        // if (0 == ibs && 0 == ihn && 0 == i) {
+        //   MY_TOOLS::print_text("\n\nlog0_ref_dst\n");
+        //   MY_TOOLS::print_matrix(dst_curr, 1, 1, p.head_size);
+        // }
       }
 }
 }  // namespace
@@ -1813,7 +2004,8 @@ void jblas_reordered_attn_fp32_forward(const jblas_reordered_attn_fp32_fp32_fwd_
       .step_dst_head_num = params->step_dst_head_num,
       .step_dst_sl = params->step_dst_sl,
   };
-  return jblas_fusion_attn_forward<float, bf16, bf16, float>(jblas_params);
+  // return jblas_fusion_attn_forward<float, bf16, bf16, float>(jblas_params);
+  return jblas_fusion_attn_forward_ref<float, bf16, bf16, float>(jblas_params);
 }
 
 void jblas_reordered_attn_fp32_update_k(const jblas_fusion_attn_fp32_update_kv_args_t* params) {

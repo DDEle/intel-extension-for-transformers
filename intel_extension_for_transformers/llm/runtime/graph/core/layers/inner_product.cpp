@@ -763,6 +763,10 @@ void jblas_fusion_QKV_f32f32_forward(float* activation, void* wqptr, void* wkptr
     ret = jblas_QKVs8fp32_f32f32_forward(activation, dynamic_cast<SS8Fp32*>(wqtmp), dynamic_cast<SS8Fp32*>(wktmp),
                                          dynamic_cast<SS8Fp32*>(wvtmp), output, _m, _n, _k, lda, ldo);
   }
+  printf("\nlog0_qkv_out\n");
+  for (int i = 0; i < 16; ++i) printf("%f ", output[i]);
+  printf("\n");
+  fflush(stdout);
   assert(ret == JblasSuccess);
   safe_delete(wqtmp);
   safe_delete(wktmp);

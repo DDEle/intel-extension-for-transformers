@@ -7259,6 +7259,13 @@ static void ne_compute_forward_rope_f32(const struct ne_compute_params* params, 
 
   const bool is_neox = mode & 2;
 
+  printf("\nlog0_rope_src\n");
+  for (int i = 0; i < 16; ++i) printf("%e ", ((float*)(src0->data + 0 * nb02))[i]);
+  printf("\n");
+  for (int i = 0; i < 16; ++i) printf("%e ", ((float*)(src0->data + 1 * nb02))[i]);
+  printf("\n");
+  fflush(stdout);
+
   for (int64_t i3 = 0; i3 < ne3; i3++) {
     for (int64_t i2 = ((mode & 1) == 0 ? 0 : n_past); i2 < ne2; i2++) {
       const int64_t p = ((mode & 1) == 0 ? n_past + i2 : i2);
@@ -7272,7 +7279,6 @@ static void ne_compute_forward_rope_f32(const struct ne_compute_params* params, 
           for (int64_t i0 = 0; i0 < ne0; i0 += 2) {
             const float cos_theta = cosf(theta);
             const float sin_theta = sinf(theta);
-
             theta *= theta_scale;
 
             const float* const src = (float*)((char*)src0->data + i3 * nb03 + i2 * nb02 + i1 * nb01 + i0 * nb00);
@@ -7280,6 +7286,10 @@ static void ne_compute_forward_rope_f32(const struct ne_compute_params* params, 
 
             const float x0 = src[0];
             const float x1 = src[1];
+            if (i3 == 0 && i2 == 1 && i1 == 0 && i0 < 16) {
+              if (i0 == 0) printf("\nlog0_rope_theta_i2==1\n");
+              printf("%e %e %e\n", cos_theta, sin_theta, theta);
+            }
 
             dst_data[0] = x0 * cos_theta - x1 * sin_theta;
             dst_data[1] = x0 * sin_theta + x1 * cos_theta;
@@ -7311,6 +7321,13 @@ static void ne_compute_forward_rope_f32(const struct ne_compute_params* params, 
       }
     }
   }
+
+  printf("\nlog0_rope_dst\n");
+  for (int i = 0; i < 16; ++i) printf("%e ", ((float*)(dst->data + 0 * nb2))[i]);
+  printf("\n");
+  for (int i = 0; i < 16; ++i) printf("%e ", ((float*)(dst->data + 1 * nb2))[i]);
+  printf("\n");
+  fflush(stdout);
 }
 
 static void ne_compute_forward_rope_f16(const struct ne_compute_params* params, const struct ne_tensor* src0,

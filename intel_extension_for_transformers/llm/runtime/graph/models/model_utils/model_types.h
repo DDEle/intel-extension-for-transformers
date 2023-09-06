@@ -64,8 +64,16 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum model_archs { MODEL_UNKNOWN, MODEL_LLAMA, MODEL_GPTJ, MODEL_MPT, MODEL_GPTNEOX, MODEL_STARCODER, MODEL_FALCON,
-                   MODEL_BLOOM };
+enum model_archs {
+  MODEL_UNKNOWN,
+  MODEL_LLAMA,
+  MODEL_GPTJ,
+  MODEL_MPT,
+  MODEL_GPTNEOX,
+  MODEL_STARCODER,
+  MODEL_FALCON,
+  MODEL_BLOOM
+};
 
 static const size_t MB = 1024 * 1024;
 
@@ -78,7 +86,6 @@ typedef enum KV_MEM_TYPE {  // Memory kv data type
 struct model_scratch {
   size_t scratch0;
   size_t scratch1;
-  size_t kv_self;
   size_t eval;
 };
 

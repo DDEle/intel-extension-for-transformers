@@ -1541,8 +1541,9 @@ void jblas_fusion_attn_forward<float, fp16, fp16, float>(const attn_fwd_args_t<f
       [[maybe_unused]] const auto ret = kernel.compute(params);
       assert(ret == JblasSuccess);
     }
+  } else {
+    assert(false);  // no suitbale launcher
   }
-  assert(false);  // no suitbale launcher
 }
 
 template <>
@@ -1856,25 +1857,34 @@ void jblas_reordered_attn_fp32_update_k(const jblas_fusion_attn_fp32_update_kv_a
   const auto pad_seq_max = padto(p.seq_max, 48);
   const auto cache_step_head_num = pad_headsize * pad_seq_max;
   const auto cache_step_bs = p.head_num * cache_step_head_num;
+  GetCPUDevice();
+  const bool use_jit = _cd->AVX512F() && (p.seq_off == 0);
+
 #pragma omp parallel for collapse(2)
   for (int ibs = 0; ibs < p.batch_size; ++ibs) {
     for (int ihn = 0; ihn < p.head_num; ++ihn) {
       const auto dst = reinterpret_cast<bf16*>(p.cache) + ibs * cache_step_bs + ihn * cache_step_head_num;
       const auto src = p.src + ibs * p.step_bs + ihn * p.step_head_num;
-      for (int i = 0; i < p.seq_size; ++i) {      // QK_GEMM should not require 0-padding on seq_kv (i.e. N-dim)
-        for (int j = 0; j < pad_headsize; ++j) {  // K-dim padding for QK_GEMM
-          const auto i_dst = p.seq_off + i;
-          const auto ii = i_dst % 48;
-          const auto i_blk = i_dst - ii;
-          const auto jj = j % 2;
-          const auto j_blk = j - jj;
-          dst[i_blk * pad_headsize + ii * 2 + j_blk * 48 + jj] =
-              j < p.head_size ? static_cast<bf16>(src[i * p.step_seq + j]) : bf16(0);
+
+      if (use_jit && 0) {
+        jblas::kernel::jit::PaddingTransInterleaveCvt::forward<48>(  //
+            src, dst, p.seq_size, p.head_size, padto(p.seq_size, 48), padto(p.head_size, 32), p.step_seq, pad_headsize);
+      } else {
+        for (int i = 0; i < p.seq_size; ++i) {      // QK_GEMM should not require 0-padding on seq_kv (i.e. N-dim)
+          for (int j = 0; j < pad_headsize; ++j) {  // K-dim padding for QK_GEMM
+            const auto i_dst = p.seq_off + i;
+            const auto ii = i_dst % 48;
+            const auto i_blk = i_dst - ii;
+            const auto jj = j % 2;
+            const auto j_blk = j - jj;
+            dst[i_blk * pad_headsize + ii * 2 + j_blk * 48 + jj] =
+                j < p.head_size ? static_cast<bf16>(src[i * p.step_seq + j]) : bf16(0);
+          }
         }
       }
     }
   }
-};
+}
 void jblas_reordered_attn_fp32_update_v(const jblas_fusion_attn_fp32_update_kv_args_t* params) {
   const auto p = *params;
   NE_ASSERT(p.step_head_size == 1);
@@ -1882,26 +1892,103 @@ void jblas_reordered_attn_fp32_update_v(const jblas_fusion_attn_fp32_update_kv_a
   const auto pad_seq_max = padto(p.seq_max, 32);
   const auto step_cache_head_num = pad_headsize * pad_seq_max;
   const auto step_cache_bs = p.head_num * step_cache_head_num;
+  GetCPUDevice();
+  const bool use_jit = _cd->AVX512F() && (p.seq_off == 0);
 
+  if (use_jit && 0) {
+    // constexpr auto SEQ_PAD = 32;
+    constexpr auto SEQ_PAD = 2;
+    // const auto seq_block_size = 32;
+    const auto seq_block_size = 2;
+    const auto hs_block_size = 48;
+    assert(seq_block_size % SEQ_PAD == 0);
+    assert(hs_block_size % 48 == 0);
+
+    const auto n_tasks_per_head = updiv(p.head_size, hs_block_size);
+    const auto n_tasks_per_seq_block = n_tasks_per_head * p.head_num;
+    const auto n_tasks_per_bs = updiv(p.seq_size, seq_block_size) * n_tasks_per_seq_block;
+    const auto n_tasks = n_tasks_per_bs * p.batch_size;
+    jblas::utils::timer<jblas::utils::microseconds> tm;
+    tm.start();
+#pragma omp parallel
+    {
+      const auto n_threads = omp_get_num_threads();
+      const auto tid = omp_get_thread_num();
+      for (int task_id = tid; task_id < n_tasks; task_id += n_threads) {
+        const auto ibs = task_id / n_tasks_per_bs;
+        const auto task_id_in_bs = task_id % n_tasks_per_bs;
+        const auto i = task_id_in_bs / n_tasks_per_seq_block * seq_block_size;
+        const auto task_id_in_seq_block = task_id_in_bs % n_tasks_per_seq_block;
+        const auto ihn = task_id_in_seq_block / n_tasks_per_head;
+        const auto j = task_id_in_seq_block % n_tasks_per_head * hs_block_size;
+
+        const auto dst = reinterpret_cast<bf16*>(p.cache)  //
+                         + ibs * step_cache_bs + ihn * step_cache_head_num + i * 48 + j * pad_seq_max;
+        const auto src = p.src + ibs * p.step_bs + ihn * p.step_head_num + i * p.step_seq + j;
+        assert(p.step_head_size == 1);
+        const auto rows_curr = std::min(seq_block_size, p.seq_size - i);
+        const auto cols_curr = std::min(hs_block_size, p.head_size - j);
+        jblas::kernel::jit::PaddingInterleaveCvt::forward<48>(  //
+            src, dst, rows_curr, cols_curr, padto(rows_curr, SEQ_PAD), padto(cols_curr, 48), p.step_seq, pad_seq_max);
+      }
+    }
+    const auto t_kern = tm.stop();
+    const auto data_size = sizeof(*p.src) * p.batch_size * p.head_num * p.seq_size * p.head_size;
+    // printf("t: %f us\tBandwidth: %f GB/s\n", t_kern, data_size / t_kern / 1000.f);
+    return;
+  }
+
+  if (use_jit && 0) {
+    jblas::utils::timer<jblas::utils::microseconds> tm;
+    tm.start();
+    const auto seq_block = 64;
+    for (int ibs = 0; ibs < p.batch_size; ++ibs) {
+      for (int ihn = 0; ihn < p.head_num; ++ihn) {
+#pragma omp parallel for collapse(1)
+        for (int i = 0; i < p.seq_size; i += seq_block) {
+          const auto dst = reinterpret_cast<bf16*>(p.cache) + ibs * step_cache_bs + ihn * step_cache_head_num + i * 48;
+          const auto src = p.src + ibs * p.step_bs + ihn * p.step_head_num + i * p.step_seq;
+          const auto rows_curr = std::min(seq_block, p.seq_size - i);
+          jblas::kernel::jit::PaddingInterleaveCvt::forward<48>(  //
+              src, dst, rows_curr, p.head_size, padto(rows_curr, 32), padto(p.head_size, 48), p.step_seq, pad_seq_max);
+        }
+      }
+    }
+    const auto t_kern = tm.stop();
+    const auto data_size = sizeof(*p.src) * p.batch_size * p.head_num * p.seq_size * p.head_size;
+    // printf("t: %f us\tBandwidth: %f GB/s\n", t_kern, data_size / t_kern / 1000.f);
+    return;
+  }
+
+  jblas::utils::timer<jblas::utils::microseconds> tm;
+  tm.start();
 #pragma omp parallel for collapse(2)
   for (int ibs = 0; ibs < p.batch_size; ++ibs) {
     for (int ihn = 0; ihn < p.head_num; ++ihn) {
       const auto dst = reinterpret_cast<bf16*>(p.cache) + ibs * step_cache_bs + ihn * step_cache_head_num;
       const auto src = p.src + ibs * p.step_bs + ihn * p.step_head_num;
-      for (int i = 0; i < padto(p.seq_off + p.seq_size, 32) - p.seq_off; ++i) {  // K-dim padding for PV_GEMM
-        for (int j = 0; j < p.head_size; ++j) {  // PV_GEMM should't require 0-padding on head_size (i.e. N-dim)
-          const auto i_dst = p.seq_off + i;
-          const auto ii = i_dst % 2;
-          const auto i_blk = i_dst - ii;
-          const auto jj = j % 48;
-          const auto j_blk = j - jj;
-          dst[i_blk * 48 + ii + j_blk * pad_seq_max + jj * 2] =
-              i < p.seq_size ? static_cast<bf16>(src[i * p.step_seq + j]) : bf16(0);
+      if (use_jit && 0) {
+        jblas::kernel::jit::PaddingInterleaveCvt::forward<48>(  //
+            src, dst, p.seq_size, p.head_size, padto(p.seq_size, 32), padto(p.head_size, 48), p.step_seq, pad_seq_max);
+      } else {
+        for (int i = 0; i < padto(p.seq_off + p.seq_size, 32) - p.seq_off; ++i) {  // K-dim padding for PV_GEMM
+          for (int j = 0; j < p.head_size; ++j) {  // PV_GEMM should't require 0-padding on head_size (i.e. N-dim)
+            const auto i_dst = p.seq_off + i;
+            const auto ii = i_dst % 2;
+            const auto i_blk = i_dst - ii;
+            const auto jj = j % 48;
+            const auto j_blk = j - jj;
+            dst[i_blk * 48 + ii + j_blk * pad_seq_max + jj * 2] =
+                i < p.seq_size ? static_cast<bf16>(src[i * p.step_seq + j]) : bf16(0);
+          }
         }
       }
     }
   }
-};
+  const auto t_kern = tm.stop();
+  const auto data_size = sizeof(*p.src) * p.batch_size * p.head_num * p.seq_size * p.head_size;
+  // printf("t: %f us\tBandwidth: %f GB/s\n", t_kern, data_size / t_kern / 1000.f);
+}
 
 #ifdef __GNUC__
 #pragma GCC pop_options

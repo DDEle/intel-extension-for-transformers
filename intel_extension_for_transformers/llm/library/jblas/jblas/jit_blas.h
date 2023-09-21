@@ -13,6 +13,10 @@
 //  limitations under the License.
 #pragma once
 #include <stdint.h>
+
+#include <cassert>
+#include <cstddef>
+
 enum JBLAS_CODE {
   JblasSuccess = 0,
   JblasInvalidParam = -1,
@@ -39,6 +43,14 @@ enum JBLAS_DTYPE {
   JblasU8 = 64,
   JblasF32F8 = 65,
 };
+inline size_t jblas_dtype_size(JBLAS_DTYPE t) {
+  return t == JblasF64    ? 8
+         : t == JblasF32  ? 4
+         : t == JblasBF16 ? 2
+         : t == JblasS8   ? 1
+         : t == JblasU8   ? 1
+                          : (assert(false), 0);
+}
 enum JBLAS_FP8_ENCODING {
   JblasFp8_e4m3 = 80,
   JblasFp8_e5m2 = 81,

@@ -9,6 +9,12 @@ on:
        - 'intel_extension_for_transformers/llm/runtime/graph/**'
        - '!intel_extension_for_transformers/llm/runtime/graph/README.md'
   workflow_dispatch:
+    inputs:
+      compiler_version:
+        description: 'compiler_version'
+        required: true
+        default: '12.2.0'
+        type: string
 
 # If there is a new commit, the previous jobs will be canceled
 concurrency:
@@ -55,7 +61,7 @@ jobs:
       - name: BF16 Benchmark
         run: |
           cd ${{ github.workspace }}/.github/workflows/script/models
-          bash cpp_graph_inference.sh cpp-graph-test ${{ matrix.modelName }} 12.2.0
+          bash cpp_graph_inference.sh cpp-graph-test ${{ matrix.modelName }} ${{ inputs.tags }}
   
       - name: Publish pipeline artifact
         uses: actions/upload-artifact@v3

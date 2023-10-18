@@ -45,6 +45,8 @@ void model_load_internal(const std::string& fname, model_archs arch, model_conte
   std::unique_ptr<CHATGLM> ms(new CHATGLM());
   ms->init(fname.c_str(), lctx, n_gpu_layers, use_mmap, use_mlock, vocab_only);
   ms->load(lctx, progress_callback, progress_callback_user_data);
+
+  lctx.support_jblas_kv = true;
 }
 
 void CHATGLM::init(const char* path_model, model_context& lctx, int n_gpu_layer_, bool use_mmap_, bool use_mlock_,
@@ -124,10 +126,10 @@ void CHATGLM::load(model_context& lctx, model_progress_callback progress_callbac
     auto& layer = model.layers[i];
     std::string layers_i = "transformer.layers." + std::to_string(i);
     // norm: cur = ln_1_g*cur + ln_1_b
-    layer.norm[0] = ml->get_tensor(layers_i + ".input_layernorm.weight", {n_embd}, backend);           // [4096]
-    layer.norm[1] = ml->get_tensor(layers_i + ".input_layernorm.bias", {n_embd}, backend);             // [4096]
-    layer.norm[2] = ml->get_tensor(layers_i + ".post_attention_layernorm.weight", {n_embd}, backend);  // [4096]
-    layer.norm[3] = ml->get_tensor(layers_i + ".post_attention_layernorm.bias", {n_embd}, backend);    // [4096]
+    layer.norm[0] = ml->get_tensor(layers_i + ".input_layernorm.weight", {n_embd}, backend);
+    layer.norm[1] = ml->get_tensor(layers_i + ".input_layernorm.bias", {n_embd}, backend);
+    layer.norm[2] = ml->get_tensor(layers_i + ".post_attention_layernorm.weight", {n_embd}, backend);
+    layer.norm[3] = ml->get_tensor(layers_i + ".post_attention_layernorm.bias", {n_embd}, backend);
 
     // qkv GEMM
     layer.attn[0] = ml->get_tensor(layers_i + ".attention.query_key_value.weight", {n_embd, 3 * n_embd}, backend);
@@ -146,12 +148,10 @@ void CHATGLM::load(model_context& lctx, model_progress_callback progress_callbac
     // layer.k_cache = d_ne_new_tensor_3d(model.ctx, NE_TYPE_F16, 4096 / 32, 2048, 32);
     // layer.v_cache = d_ne_new_tensor_3d(model.ctx, NE_TYPE_F16, 2048, 4096 / 32, 32);
     if (backend != NE_BACKEND_CPU) {
-      vram_total += ne_nbytes(layer.norm[0]) + ne_nbytes(layer.norm[1]) +
-                    ne_nbytes(layer.norm[2]) + ne_nbytes(layer.norm[3]) +
-                    ne_nbytes(layer.attn[0]) + ne_nbytes(layer.attn[1]) +
-                    ne_nbytes(layer.attn[2]) + ne_nbytes(layer.attn[3]) +
-                    ne_nbytes(layer.ffn[0]) + ne_nbytes(layer.ffn[1]) +
-                    ne_nbytes(layer.ffn[2]) + ne_nbytes(layer.ffn[3]);
+      vram_total += ne_nbytes(layer.norm[0]) + ne_nbytes(layer.norm[1]) + ne_nbytes(layer.norm[2]) +
+                    ne_nbytes(layer.norm[3]) + ne_nbytes(layer.attn[0]) + ne_nbytes(layer.attn[1]) +
+                    ne_nbytes(layer.attn[2]) + ne_nbytes(layer.attn[3]) + ne_nbytes(layer.ffn[0]) +
+                    ne_nbytes(layer.ffn[1]) + ne_nbytes(layer.ffn[2]) + ne_nbytes(layer.ffn[3]);
     }
   }
 

@@ -240,29 +240,55 @@ static bool gptj_model_eval_internal(model_context& lctx, const model_token* tok
                                ((il * n_ctx) * ne_element_size(kv_self.k) * n_embd * kv_n_ctx_block +
                                 i * n_ctx * n_embd * ne_element_size(kv_self.k) + n_past * ne_element_size(kv_self.k)));
         } else {
-          // batch K
-          Kcur_bs[i] = ne_view_4d(ctx0, Kcur, n_embd / n_head, n_head, N, 1, ne_element_size(Kcur) * n_embd / n_head,
-                                  ne_element_size(Kcur) * n_embd, ne_element_size(Kcur) * n_embd * N,
-                                  i * ne_element_size(Kcur) * n_embd * N);
-          k_bs[i] = ne_view_1d(ctx0, kv_self.k, n_embd * N * 1,
-                               (ne_element_size(kv_self.k) * n_embd) * (il * n_ctx * kv_n_ctx_block + n_past) +
-                                   i * n_ctx * n_embd * ne_element_size(kv_self.k));
+          //   // batch K
+          //   Kcur_bs[i] = ne_view_4d(ctx0, Kcur, n_embd / n_head, n_head, N, 1, ne_element_size(Kcur) * n_embd /
+          //   n_head,
+          //                           ne_element_size(Kcur) * n_embd, ne_element_size(Kcur) * n_embd * N,
+          //                           i * ne_element_size(Kcur) * n_embd * N);
+          //   k_bs[i] = ne_view_1d(ctx0, kv_self.k, n_embd * N * 1,
+          //                        (ne_element_size(kv_self.k) * n_embd) * (il * n_ctx * kv_n_ctx_block + n_past) +
+          //                            i * n_ctx * n_embd * ne_element_size(kv_self.k));
 
-          // batch V
-          Vcur_bs[i] = ne_permute(ctx0,
-                                  ne_reshape_4d(ctx0,
-                                                ne_view_2d(ctx0, Vcur, n_embd, N, ne_element_size(Vcur) * n_embd,
-                                                           i * ne_element_size(Vcur) * n_embd * N),
-                                                n_embd / n_head, n_head, N, 1),
-                                  1, 2, 0, 3);
-          v_bs[i] = ne_view_4d(ctx0, kv_self.v, N, n_embd / n_head, n_head, 1, n_ctx * ne_element_size(kv_self.v),
-                               n_ctx * ne_element_size(kv_self.v) * n_embd / n_head,
-                               n_ctx * ne_element_size(kv_self.v) * n_embd,
-                               ((il * n_ctx) * ne_element_size(kv_self.v) * n_embd * kv_n_ctx_block +
-                                i * n_ctx * n_embd * ne_element_size(kv_self.v) + n_past * ne_element_size(kv_self.v)));
+          //   // batch V
+          //   Vcur_bs[i] = ne_permute(ctx0,
+          //                           ne_reshape_4d(ctx0,
+          //                                         ne_view_2d(ctx0, Vcur, n_embd, N, ne_element_size(Vcur) * n_embd,
+          //                                                    i * ne_element_size(Vcur) * n_embd * N),
+          //                                         n_embd / n_head, n_head, N, 1),
+          //                           1, 2, 0, 3);
+          //   v_bs[i] = ne_view_4d(ctx0, kv_self.v, N, n_embd / n_head, n_head, 1, n_ctx * ne_element_size(kv_self.v),
+          //                        n_ctx * ne_element_size(kv_self.v) * n_embd / n_head,
+          //                        n_ctx * ne_element_size(kv_self.v) * n_embd,
+          //                        ((il * n_ctx) * ne_element_size(kv_self.v) * n_embd * kv_n_ctx_block +
+          //                         i * n_ctx * n_embd * ne_element_size(kv_self.v) + n_past *
+          //                         ne_element_size(kv_self.v)));
+          // }
+          // ne_build_forward_expand(&gf, ne_cpy(ctx0, Kcur_bs[i], k_bs[i]));
+          // ne_build_forward_expand(&gf, ne_cpy(ctx0, Vcur_bs[i], v_bs[i]));
+          const auto head_size = n_embd / n_head;
+          ne_build_forward_expand(
+              &gf, ne_cpy(ctx0,
+                          ne_view_4d(ctx0, Kcur, head_size, n_head, N, 1, ne_element_size(Kcur) * head_size,
+                                     ne_element_size(Kcur) * n_embd, ne_element_size(Kcur) * n_embd * N,
+                                     i * ne_element_size(Kcur) * n_embd * N),
+                          ne_view_1d(ctx0, kv_self.k, n_embd * N * 1,
+                                     (ne_element_size(kv_self.k) * n_embd) * (il * n_ctx * kv_n_ctx_block + n_past) +
+                                         i * n_ctx * n_embd * ne_element_size(kv_self.k))));
+          ne_build_forward_expand(
+              &gf,
+              ne_cpy(ctx0,
+                     ne_permute(ctx0,
+                                ne_reshape_4d(ctx0,
+                                              ne_view_2d(ctx0, Vcur, n_embd, N, ne_element_size(Vcur) * n_embd,
+                                                         i * ne_element_size(Vcur) * n_embd * N),
+                                              head_size, n_head, N, 1),
+                                1, 2, 0, 3),
+                     ne_view_4d(
+                         ctx0, kv_self.v, N, head_size, n_head, 1, n_ctx * ne_element_size(kv_self.v),
+                         n_ctx * ne_element_size(kv_self.v) * head_size, n_ctx * ne_element_size(kv_self.v) * n_embd,
+                         ((il * n_ctx) * ne_element_size(kv_self.v) * n_embd * kv_n_ctx_block +
+                          i * n_ctx * n_embd * ne_element_size(kv_self.v) + n_past * ne_element_size(kv_self.v)))));
         }
-        ne_build_forward_expand(&gf, ne_cpy(ctx0, Kcur_bs[i], k_bs[i]));
-        ne_build_forward_expand(&gf, ne_cpy(ctx0, Vcur_bs[i], v_bs[i]));
       }
     } else {
       const auto head_size = n_embd / n_head;

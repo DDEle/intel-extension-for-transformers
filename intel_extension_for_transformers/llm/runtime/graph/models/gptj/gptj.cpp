@@ -397,13 +397,38 @@ static bool gptj_model_eval_internal(model_context& lctx, const model_token* tok
       // KQ_masked = mask_past(KQ_scaled)
       struct ne_tensor* KQ_masked = ne_diag_mask_inf_inplace(ctx0, KQ_scaled, n_past);
       ne_set_name(KQ_masked, "KQ_masked");
+      KQ_masked = ne_debug_op(ctx0, KQ_masked, [](const struct ne_tensor* KQ_masked) {
+        printf("\nKQ_masked ");
+        NE_ASSERT(KQ_masked->type == NE_TYPE_F32);
+        for (int i = 0; i < KQ_masked->ne[0]; i++) {
+          printf("%.10f ", reinterpret_cast<float*>(KQ_masked->data)[i]);
+        }
+        printf("\n");
+      });
 
       // KQ = soft_max(KQ_masked)
       struct ne_tensor* KQ_soft_max = ne_soft_max_inplace(ctx0, KQ_masked);
       ne_set_name(KQ_soft_max, "KQ_soft_max");
+      KQ_soft_max = ne_debug_op(ctx0, KQ_soft_max, [](const struct ne_tensor* KQ_soft_max) {
+        printf("softmax ");
+        NE_ASSERT(KQ_soft_max->type == NE_TYPE_F32);
+        for (int i = 0; i < KQ_soft_max->ne[0]; i++) {
+          printf("%.10f ", reinterpret_cast<float*>(KQ_soft_max->data)[i]);
+        }
+        printf("\n");
+      });
 
       struct ne_tensor* KQV = ne_mul_mat(ctx0, V, KQ_soft_max);
       ne_set_name(KQV, "KQV");
+      KQV = ne_debug_op(ctx0, KQV, [](const struct ne_tensor* KQV) {
+        printf("kqv ");
+        NE_ASSERT(KQV->type == NE_TYPE_F32);
+        for (int i = 0; i < KQV->ne[0]; i++) {
+          printf("%.10f ", reinterpret_cast<float*>(KQV->data)[i]);
+        }
+        printf("\n");
+        printf("\n");
+      });
 
       // KQV_merged = KQV.permute(0, 2, 1, 3)
       struct ne_tensor* KQV_merged = ne_permute(ctx0, KQV, 0, 2, 1, 3);

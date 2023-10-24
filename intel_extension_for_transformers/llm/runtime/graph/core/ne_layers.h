@@ -402,6 +402,10 @@ NE_API struct ne_tensor* ne_rope(struct ne_context* ctx, struct ne_tensor* a, in
 NE_API struct ne_tensor* ne_rope_inplace(struct ne_context* ctx, struct ne_tensor* a, int n_past, int n_dims, int mode,
                                          int prompt_size);
 
+// ne_rope_inplace but used for ring-k-cache
+NE_API struct ne_tensor* ne_rope_ring(struct ne_context* ctx, struct ne_tensor* a, int n_past, int n_dims, int mode,
+                                      int prompt_size, int n_keep);
+
 // rotary position embedding backward, i.e compute dx from dy
 // a - dy
 NE_API struct ne_tensor* ne_rope_back(struct ne_context* ctx, struct ne_tensor* a, int n_past, int n_dims, int mode);

@@ -57,7 +57,8 @@
 
 // non-null pointer of model for kv-cache as components of model->layers[il] (e.g. chatglm)
 static bool kv_cache_init(const struct model_hparams& hparams, struct model_kv_cache& cache, const ne_type wtype,
-                          const int n_ctx, const int batch_size, const int beam_size, model_struct* model) {
+                          const int n_ctx, const int batch_size, const int beam_size, const bool non_roped_k,
+                          model_struct* model) {
   const auto n_layer = hparams.n_layer;
   const auto heads_kv = hparams.n_head_kv > 0 ? hparams.n_head_kv : hparams.n_head;
   const auto head_size = hparams.n_embd / hparams.n_head;
@@ -124,6 +125,9 @@ static bool kv_cache_init(const struct model_hparams& hparams, struct model_kv_c
     ne_set_name(cache.v, "cache_v");
   }
 
+  if (wtype == NE_TYPE_JBLAS && non_roped_k) {  // prepare rope helper for fused-attention
+    NE_ASSERT(("TODO(Yi): attention fused rope helper preparation.", false));
+  }
   return true;
 }
 
@@ -143,6 +147,7 @@ struct model_context_params model_context_default_params() {
       /*.batch_size                  =*/1,
       /*.beam_search                 =*/false,
       /*.beam_size                   =*/1,
+      /*.non_roped_k                 =*/false,
       /*.progress_callback           =*/nullptr,
       /*.progress_callback_user_data =*/nullptr,
   };
@@ -1128,6 +1133,7 @@ struct model_context* model_init_from_file(const char* path_model, struct model_
   ctx->batch_size = params.batch_size;
   ctx->n_ctx = params.n_ctx;
   ctx->n_keep = params.n_keep;
+  ctx->non_roped_k = params.non_roped_k;
   if (params.beam_search) {
     ctx->beam_search = true;
     ctx->beam_size = params.beam_size;
@@ -1165,9 +1171,9 @@ struct model_context* model_init_from_file(const char* path_model, struct model_
                                     : NE_TYPE_COUNT;
     NE_ASSERT(memory_type != NE_TYPE_COUNT);
 
-    if (!kv_cache_init(
-            ctx->model.hparams, ctx->model.kv_self, memory_type, ctx->n_ctx, ctx->batch_size, ctx->beam_size,
-            ((arch == MODEL_CHATGLM2 || arch == MODEL_CHATGLM || arch == MODEL_BAICHUAN) ? &ctx->model : nullptr))) {
+    const bool kv_in_layers = (arch == MODEL_CHATGLM2 || arch == MODEL_CHATGLM || arch == MODEL_BAICHUAN);
+    if (!kv_cache_init(ctx->model.hparams, ctx->model.kv_self, memory_type, ctx->n_ctx, ctx->batch_size, ctx->beam_size,
+                       params.non_roped_k, (kv_in_layers ? &ctx->model : nullptr))) {
       fprintf(stderr, "%s: kv_cache_init() failed for self-attention cache\n", __func__);
       model_free(ctx);
       return nullptr;
@@ -1501,6 +1507,10 @@ struct model_context* model_init_from_gpt_params(const gpt_params& params) {
   lparams.batch_size = params.batch_size;
   lparams.beam_search = params.beam_search;
   lparams.beam_size = params.beam_size;
+  NE_ASSERT(("non-RoPEd K cache is not supported by this model!",  //
+             !lparams.non_roped_k || lparams.arch == MODEL_LLAMA));
+  lparams.non_roped_k = params.non_roped_k;
+
   NE_ASSERT(("Start size cannot be greater than the maximun context size!", lparams.n_keep < lparams.n_ctx));
 
   model_context* lctx = model_init_from_file(params.model.c_str(), lparams);
@@ -1557,7 +1567,7 @@ void get_batch_kv_elements_from_gpt_params(int heads_kv, int head_size, int n_ct
   }
 }
 
-int model_get_kv_cache_token_total(const struct model_context* ctx) { return ctx->model.kv_self.n; }
+int model_get_kv_cache_token_count(const struct model_context* ctx) { return ctx->model.kv_self.n; }
 
 #define MODEL_MAX_RNG_STATE (64 * 1024)
 
@@ -1650,7 +1660,7 @@ size_t model_copy_state_data(struct model_context* ctx, uint8_t* dst) {
     const int n_ctx = ctx->n_ctx;
 
     const size_t kv_size = kv_self.buf.size;
-    const int kv_ntok = model_get_kv_cache_token_total(ctx);
+    const int kv_ntok = model_get_kv_cache_token_count(ctx);
 
     memcpy(out, &kv_size, sizeof(kv_size));
     out += sizeof(kv_size);

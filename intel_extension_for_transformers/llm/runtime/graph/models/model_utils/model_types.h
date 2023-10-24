@@ -259,6 +259,7 @@ struct model_context {
   model_vocab vocab;
   int batch_size = 1;
   bool beam_search = false;
+  bool non_roped_k = false;       // whether to store non-RoPEd K cache
   bool support_jblas_kv = false;  // whether the model graph supports jblas-kvcache
   int beam_size = 1;
   int kv_n_ctx_block = 1;
@@ -356,6 +357,7 @@ struct model_context_params {
   int batch_size;       // batch_size of prompt
   bool beam_search;     // beam search or not
   int beam_size;        // number of beams for beam search
+  bool non_roped_k;     // whether to store non-RoPEd K cache
 
   // called with a progress value between 0 and 1, pass NULL to disable
   model_progress_callback progress_callback;

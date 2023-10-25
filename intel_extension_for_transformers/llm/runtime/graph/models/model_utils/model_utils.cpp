@@ -62,8 +62,8 @@ static bool kv_cache_init(const struct model_hparams& hparams, struct model_kv_c
   const auto n_layer = hparams.n_layer;
   const auto heads_kv = hparams.n_head_kv > 0 ? hparams.n_head_kv : hparams.n_head;
   const auto head_size = hparams.n_embd / hparams.n_head;
-  int32_t k_size, v_size;
-  get_batch_kv_elements_from_gpt_params(heads_kv, head_size, n_ctx, wtype, &k_size, &v_size);
+  int32_t k_size, v_size, cossin_size;
+  get_batch_kv_elements_from_gpt_params(heads_kv, head_size, n_ctx, wtype, non_roped_k, &k_size, &v_size, &cossin_size);
 
   const int64_t layer_ne_k = batch_size * beam_size * k_size;
   const int64_t layer_ne_v = batch_size * beam_size * v_size;
@@ -125,8 +125,27 @@ static bool kv_cache_init(const struct model_hparams& hparams, struct model_kv_c
     ne_set_name(cache.v, "cache_v");
   }
 
-  if (wtype == NE_TYPE_JBLAS && non_roped_k) {  // prepare rope helper for fused-attention
-    NE_ASSERT(("TODO(Yi): attention fused rope helper preparation.", false));
+  if (cossin_size > 0) {  // prepare rope helper for fused-attention
+#ifdef NE_PERF
+    const auto start_us = ne_time_us();
+#endif
+
+    cache.cossin = ne_new_tensor_1d(cache.ctx, wtype_alloc, cossin_size + NE_ALIGNMENT, NE_SIZE_CALC);
+    const auto cossin_align_off = reinterpret_cast<uintptr_t>(cache.cossin->data) % NE_ALIGNMENT;
+    cache.cossin = ne_view_1d(cache.ctx, cache.cossin, cossin_size, NE_ALIGNMENT - cossin_align_off);
+    cache.cossin->type = NE_TYPE_JBLAS;
+    kv_shape_t kv_shape = {
+        /* .heads_kv = */ static_cast<uint32_t>(heads_kv),
+        /* .head_size = */ static_cast<uint32_t>(head_size),
+        /* .sl_kv_max = */ static_cast<uint32_t>(n_ctx),
+    };
+    const float theta_scale = std::pow(10000.f, -2.0f / head_size);
+    jblas_reordered_attn_fp32_cossin_init(&kv_shape, cache.cossin->data, theta_scale);
+#ifdef NE_PERF
+    const auto time_us = ne_time_us() - start_us;
+    bool engine_profiling_ = (getenv("ENGINE_PROFILING") != NULL);
+    if (engine_profiling_) printf("%s: cossin init time = %8.2f ms\n", __func__, time_us / 1000.0);
+#endif
   }
   return true;
 }
@@ -1547,21 +1566,24 @@ struct model_context* model_init_from_gpt_params(const gpt_params& params) {
   return lctx;
 }
 
-void get_batch_kv_elements_from_gpt_params(int heads_kv, int head_size, int n_ctx, ne_type wtype, int32_t* k_size,
-                                           int32_t* v_size) {
+void get_batch_kv_elements_from_gpt_params(int heads_kv, int head_size, int n_ctx, ne_type wtype, bool fused_rope_k,
+                                           int32_t* k_size, int32_t* v_size, int32_t* cossin_size) {
   if (wtype == NE_TYPE_F16 || wtype == NE_TYPE_F32) {
     *k_size = n_ctx * heads_kv * head_size;
     *v_size = n_ctx * heads_kv * head_size;
+    *cossin_size = 0;
   } else if (wtype == NE_TYPE_JBLAS) {
     kv_shape_t kv_shape = {
         /* .heads_kv = */ static_cast<uint32_t>(heads_kv),
         /* .head_size = */ static_cast<uint32_t>(head_size),
         /* .sl_kv_max = */ static_cast<uint32_t>(n_ctx),
+        /* .fused_rope_k = */ fused_rope_k,
     };
     kv_cache_info_t kv_cache_info;
     jblas_reordered_attn_fp32_batch_kv_info(&kv_shape, &kv_cache_info);
     *k_size = kv_cache_info.k_bytes;
     *v_size = kv_cache_info.v_bytes;
+    *cossin_size = kv_cache_info.cossin_bytes;
   } else {
     assert(false);
   }

@@ -30,6 +30,7 @@ typedef struct kv_shape_t {
   uint32_t heads_kv;   // number of heads in K/V matrix
   uint32_t head_size;  // channel dimension of each head
   uint32_t sl_kv_max;  // maximum length of sequence (affect internal step size)
+  bool fused_rope_k;
 } kv_shape_t;
 
 typedef enum ATTN_FWD_LAYOUT {
@@ -48,6 +49,7 @@ typedef struct kv_cache_info_t {
   ATTN_FWD_LAYOUT k_layout, v_layout;
   int stride_k_head_num, stride_k_sl, stride_k_head_size;
   int stride_v_head_num, stride_v_sl, stride_v_head_size;
+  size_t cossin_bytes;  // size of a cossin table used as helper for RoPE-K
 } kv_cache_info_t;
 
 typedef struct attn_bf16_fwd_args_t {
@@ -123,6 +125,9 @@ bool jblas_reordered_attn_fp32_support(const attn_shape_t* params);
 
 // kv cache sizes in bytes per layer per batch per beam
 void jblas_reordered_attn_fp32_batch_kv_info(const kv_shape_t* params, kv_cache_info_t* out);
+
+// init the sin/cos table for RoPE-K
+void jblas_reordered_attn_fp32_cossin_init(const kv_shape_t* params, void* cossin, const float theta_scale);
 
 typedef struct jblas_fusion_attn_fp32_update_kv_args_t {
   float* src;

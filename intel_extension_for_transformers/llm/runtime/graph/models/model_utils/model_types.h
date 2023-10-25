@@ -154,6 +154,7 @@ struct model_layer {
 struct model_kv_cache {
   struct ne_tensor* k;
   struct ne_tensor* v;
+  struct ne_tensor* cossin = NULL;  // sin/cos table for RoPE-K
 
   struct ne_context* ctx = NULL;
 

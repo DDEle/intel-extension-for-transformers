@@ -98,7 +98,7 @@ static bool llama_model_eval_internal(model_context& lctx, const model_token* to
   gf.n_threads = N >= 32 && ne_cpu_has_blas() ? 1 : n_threads;
 
   const bool run_mha_reordered = kv_self.k->type == NE_TYPE_JBLAS;
-  kv_cache_info_t kv_cache_info = {0, 0};
+  kv_cache_info_t kv_cache_info = {};
   if (run_mha_reordered) {
     NE_ASSERT(kv_self.v->type == NE_TYPE_JBLAS);  // kv type should be the same
     attn_shape_t attn_shape = {
@@ -116,6 +116,7 @@ static bool llama_model_eval_internal(model_context& lctx, const model_token* to
         /* .heads_kv = */ static_cast<uint32_t>(n_head_kv),
         /* .head_size = */ static_cast<uint32_t>(n_embd / n_head),
         /* .sl_kv_max = */ static_cast<uint32_t>(n_ctx),
+        /* .fused_rope_k = */ non_roped_k,
     };
     jblas_reordered_attn_fp32_batch_kv_info(&kv_shape, &kv_cache_info);
   }

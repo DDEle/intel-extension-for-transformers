@@ -1885,13 +1885,14 @@ bool jblas_reordered_attn_fp32_support(const attn_shape_t* params) {
 }
 // kv cache sizes in bytes per layer per batch per beam for;
 void jblas_reordered_attn_fp32_batch_kv_info(const kv_shape_t* params, kv_cache_info_t* out) {
-  // use bf16 for kv-cache
+  // use bf16 for kv-cache; use fp16 for K-cache if fused_rope_k
   const auto p = *params;
   out->k_layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
   out->v_layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
 
-  out->stride_k_head_size = sizeof(bf16) * 48;
-  out->stride_k_sl = sizeof(bf16) * padto(static_cast<int>(p.head_size), 32);
+  const auto k_dsize = params->fused_rope_k ? sizeof(fp16) : sizeof(bf16);
+  out->stride_k_head_size = k_dsize * 48;
+  out->stride_k_sl = k_dsize * padto(static_cast<int>(p.head_size), 32);
   out->stride_k_head_num = out->stride_k_sl * padto(static_cast<int>(p.sl_kv_max), 48);
   out->k_bytes = out->stride_k_head_num * p.heads_kv;
 
@@ -1899,6 +1900,31 @@ void jblas_reordered_attn_fp32_batch_kv_info(const kv_shape_t* params, kv_cache_
   out->stride_v_head_size = sizeof(bf16) * padto(static_cast<int>(p.sl_kv_max), 32);
   out->stride_v_head_num = out->stride_v_head_size * padto(static_cast<int>(p.head_size), 48);
   out->v_bytes = out->stride_v_head_num * p.heads_kv;
+
+  out->cossin_bytes = 0;
+  if (params->fused_rope_k) {
+    // headsize need to *2 for sin&cos and /2 for the odd-even grouping; they cancel out
+    out->cossin_bytes =
+        sizeof(fp16) * padto(static_cast<int>(p.head_size), 32) * padto(static_cast<int>(p.sl_kv_max), 48);
+  }
+}
+
+void jblas_reordered_attn_fp32_cossin_init(const kv_shape_t* params, void* cossin, const float theta_scale) {
+  const auto dst = reinterpret_cast<fp16*>(cossin);
+  const auto p = *params;
+  const auto pad_heads_kv = padto(static_cast<int>(p.head_size), 32);
+  const auto pad_head_size = padto(static_cast<int>(p.sl_kv_max), 48);
+
+#pragma omp parallel for
+  for (size_t i = 0; i < pad_heads_kv; i += 2) {
+    const float theta_base = std::pow(theta_scale, i / 2);
+    for (size_t j = 0; j < pad_head_size; ++j) {
+      const float theta = theta_base * j;
+      dst[i * pad_head_size + j * 2 + 0] = static_cast<fp16>(std::cos(theta));
+      // need to negate here as vfcmulpch views its 3nd operator as complex conjugate
+      dst[i * pad_head_size + j * 2 + 1] = static_cast<fp16>(std::sin(-theta));
+    }
+  }
 }
 
 void jblas_reordered_attn_fp32_forward(const jblas_reordered_attn_fp32_fp32_fwd_args_t* params) {

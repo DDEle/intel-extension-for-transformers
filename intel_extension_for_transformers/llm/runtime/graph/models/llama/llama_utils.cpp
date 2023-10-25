@@ -70,7 +70,7 @@ void Llama::init(const char* path_model, model_context& lctx, int n_gpu_layer_, 
   fprintf(stderr, "%s: n_embd     = %u\n", __func__, hparams.n_embd);
   fprintf(stderr, "%s: n_mult     = %u\n", __func__, hparams.n_mult);
   fprintf(stderr, "%s: n_head     = %u\n", __func__, hparams.n_head);
-  fprintf(stderr, "%s: n_head_kv    = %u\n", __func__, hparams.n_head_kv);
+  fprintf(stderr, "%s: n_head_kv  = %u\n", __func__, hparams.n_head_kv);
   fprintf(stderr, "%s: n_layer    = %u\n", __func__, hparams.n_layer);
   fprintf(stderr, "%s: n_rot      = %u\n", __func__, hparams.n_rot);
   fprintf(stderr, "%s: n_ff       = %u\n", __func__, n_ff);

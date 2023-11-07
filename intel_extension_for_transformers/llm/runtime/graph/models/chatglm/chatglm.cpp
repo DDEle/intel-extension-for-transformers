@@ -66,6 +66,9 @@ static bool chatglm_model_eval_internal(model_context& lctx, const model_token* 
   const int n_layer = hparams.n_layer;
   const int n_ctx = lctx.n_ctx;
   const int n_keep = lctx.n_keep;
+  const bool shift_roped_k = lctx.shift_roped_k;
+  const bool is_ring_full = shift_roped_k && n_total > n_past;
+  NE_ASSERT(("Shift-RoPE-K to be implemented for the chatglm-mode RoPE!", !is_ring_full));
 
   if (flag == 0) {
     first_tokens_size = n_tokens;
@@ -187,7 +190,7 @@ static bool chatglm_model_eval_internal(model_context& lctx, const model_token* 
         // attention
         struct ne_tensor* attn_scores = ne_mul_mat(ctx0, key_layer, query_layer);  // [kv_heads, mqa_scale * N, klen]
 
-        if (n_past == 0) {
+        if (n_total == 0) {
           // build attention mask for context input
           ne_tensor* inf = ne_new_tensor_3d(ctx0, attn_scores->type, 1, N - 1, n_head, NE_SIZE_CALC);
           ne_set_f32(inf, -INFINITY);
@@ -218,12 +221,12 @@ static bool chatglm_model_eval_internal(model_context& lctx, const model_token* 
                                           head_size, n_ctx, n_head,        // ne
                                           0, 0,                            // nb (jblas managed)
                                           0);                              // offset
-          ne_build_forward_expand(&gf, ne_flash_attn_update_k(ctx0, k_cache, key_layer, n_past));
+          ne_build_forward_expand(&gf, ne_flash_attn_update_k(ctx0, k_cache, key_layer, n_past, false));
           const auto v_cache = ne_view_3d(ctx0, model.layers[il].v_cache,  // tensor
                                           head_size, n_ctx, n_head,        // ne
                                           0, 0,                            // nb (jblas managed)
                                           0);                              // offset
-          ne_build_forward_expand(&gf, ne_flash_attn_update_v(ctx0, v_cache, value_layer, n_past));
+          ne_build_forward_expand(&gf, ne_flash_attn_update_v(ctx0, v_cache, value_layer, n_past, false));
         }
         query_layer = ne_permute(ctx0, query_layer, 0, 2, 1, 3);
 
@@ -239,7 +242,7 @@ static bool chatglm_model_eval_internal(model_context& lctx, const model_token* 
         *reinterpret_cast<ATTN_FWD_LAYOUT*>(&value_layer->nb[0]) = kv_cache_info.v_layout;
 
         ne_attn_flags_t attn_flags = NE_ATTN_FLAG_NONE;
-        if (n_past == 0) attn_flags |= NE_ATTN_FLAG_IS_CAUSAL;  // no causal mask on next-token cases
+        if (n_total == 0) attn_flags |= NE_ATTN_FLAG_IS_ABI;  // Autoregressive Blank Infilling for first token
 
         struct ne_tensor* KQV_Out = ne_flash_attn(ctx0, query_layer, key_layer, value_layer, attn_scale, attn_flags);
         cur = ne_view_2d(ctx0, KQV_Out, n_embd, N, n_embd * ne_element_size(KQV_Out), 0);

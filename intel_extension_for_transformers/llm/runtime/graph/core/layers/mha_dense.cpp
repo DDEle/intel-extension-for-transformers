@@ -700,7 +700,9 @@ class MHAInterface {
     omp_set_num_threads(cb.mNumThreads);
     const bool is_causal = (p.attn_flags & NE_ATTN_FLAG_IS_CAUSAL) != 0;
     const bool is_alibi = (p.attn_flags & NE_ATTN_FLAG_IS_ALIBI8) != 0;
+    const bool is_abi = (p.attn_flags & NE_ATTN_FLAG_IS_ABI) != 0;  // Autoregressive Blank Infilling
     assert(!is_causal || p.sl_q <= p.sl_kv);
+    assert(("Can not enable Autoregressive Blank Infilling with causal mask!", !is_abi || !is_causal));
     assert(("alibi not supported!", !is_alibi));
     assert(("GQA not supported!", p.head_num == p.heads_kv));
     const auto sl_diff = p.sl_kv - p.sl_q;
@@ -1381,7 +1383,9 @@ class MHAStableInterface {
     omp_set_num_threads(cb.mNumThreads);
     const bool is_causal = (p.attn_flags & NE_ATTN_FLAG_IS_CAUSAL) != 0;
     const bool is_alibi = (p.attn_flags & NE_ATTN_FLAG_IS_ALIBI8) != 0;
+    const bool is_abi = (p.attn_flags & NE_ATTN_FLAG_IS_ABI) != 0;  // Autoregressive Blank Infilling
     assert(!is_causal || p.sl_q <= p.sl_kv);
+    assert(("Can not enable Autoregressive Blank Infilling with causal mask!", !is_abi || !is_causal));
     assert(("head_num must be a multiple of heads_kv!", p.head_num % p.heads_kv == 0));
     const auto group_heads = p.head_num / p.heads_kv;
     const auto sl_diff = p.sl_kv - p.sl_q;
@@ -1719,8 +1723,9 @@ template <typename Q_T, typename K_T, typename V_T, typename DST_T>
 void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& p) {
   const bool is_causal = (p.attn_flags & NE_ATTN_FLAG_IS_CAUSAL) != 0;
   const bool is_alibi = (p.attn_flags & NE_ATTN_FLAG_IS_ALIBI8) != 0;
+  const bool is_abi = (p.attn_flags & NE_ATTN_FLAG_IS_ABI) != 0;  // Autoregressive Blank Infilling
   assert(!is_causal || p.sl_q <= p.sl_kv);
-  assert(("head_num must be a multiple of heads_kv!", p.head_num % p.heads_kv == 0));
+  assert(("Can not enable Autoregressive Blank Infilling with causal mask!", !is_abi || !is_causal));
   const auto group_heads = p.head_num / p.heads_kv;
   attn_shape_t attn_shape{
       p.batch_size, p.head_num, p.heads_kv, p.head_size, p.sl_q, p.sl_kv,
@@ -2145,8 +2150,9 @@ class TestMhaDese {
     assert(("GQA not supported!", s.head_num == s.heads_kv));
 
     printf("\ntest_case: %s\t", __PRETTY_FUNCTION__);
-    printf("bs_%d hn_%d hs_%d hkv_%d sl_q_%d sk_kv_%d %s %s\n", batch_size, head_num, heads_kv, head_size, sl_q, sl_kv,
-           flags & NE_ATTN_FLAG_IS_CAUSAL ? "maksed" : "unmask", flags & NE_ATTN_FLAG_IS_ALIBI8 ? "alibi8" : "");
+    printf("bs_%d hn_%d hs_%d hkv_%d sl_q_%d sk_kv_%d %s %s %s\n", batch_size, head_num, heads_kv, head_size, sl_q,
+           sl_kv, flags & NE_ATTN_FLAG_IS_CAUSAL ? "maksed" : "unmask", flags & NE_ATTN_FLAG_IS_ALIBI8 ? "alibi8" : "",
+           flags & NE_ATTN_FLAG_IS_ABI ? "abi" : "");
 
     const auto NTILE = kv_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4   ? 48
                        : kv_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2 ? 48
@@ -2278,8 +2284,9 @@ class TestMhaDese {
     assert(("head_num must be a multiple of heads_kv!", head_num % heads_kv == 0));
 
     printf("\ntest_case: %s\t", __PRETTY_FUNCTION__);
-    printf("bs_%d hn_%d hs_%d hkv_%d sl_q_%d sk_kv_%d %s %s\n", batch_size, head_num, heads_kv, head_size, sl_q, sl_kv,
-           flags & NE_ATTN_FLAG_IS_CAUSAL ? "maksed" : "unmask", flags & NE_ATTN_FLAG_IS_ALIBI8 ? "alibi8" : "");
+    printf("bs_%d hn_%d hs_%d hkv_%d sl_q_%d sk_kv_%d %s %s %s\n", batch_size, head_num, heads_kv, head_size, sl_q,
+           sl_kv, flags & NE_ATTN_FLAG_IS_CAUSAL ? "maksed" : "unmask", flags & NE_ATTN_FLAG_IS_ALIBI8 ? "alibi8" : "",
+           flags & NE_ATTN_FLAG_IS_ABI ? "abi" : "");
 
     assert(sl_kv_max >= sl_kv);
 

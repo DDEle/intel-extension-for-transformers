@@ -1,12 +1,13 @@
-import numpy
+import os
 import shutil
-import torch
 import unittest
 
-from transformers import AutoTokenizer, TextStreamer
-from intel_extension_for_transformers.transformers import AutoModel, WeightOnlyQuantConfig, AutoModelForCausalLM
-from intel_extension_for_transformers.llm.runtime.graph.scripts.convert import convert_model
 from intel_extension_for_transformers.llm.runtime.graph import Model
+from intel_extension_for_transformers.llm.runtime.graph.scripts.convert import \
+    convert_model
+from intel_extension_for_transformers.transformers import (
+    AutoModel, AutoModelForCausalLM, WeightOnlyQuantConfig)
+from transformers import AutoTokenizer, TextStreamer
 
 
 class TestLLMRUNTIME(unittest.TestCase):
@@ -61,9 +62,9 @@ class TestLLMRUNTIME(unittest.TestCase):
         itrex_model = Model()
         itrex_model.init_from_bin("gptj", "gptj_fp32.bin", batch_size=4, num_beams=4,
                                   max_new_tokens=128, min_new_tokens=30, early_stopping=True,
-                                  pad_token=pad_token)
+                                  pad_token=pad_token, threads=len(os.sched_getaffinity(0)))
         itrex_generate_ids = itrex_model.generate(inputs.input_ids, batch_size=4, num_beams=4,
-                                  max_new_tokens=128, min_new_tokens=30, early_stopping=True,
-                                  pad_token=pad_token)
+                                                  max_new_tokens=128, min_new_tokens=30, early_stopping=True,
+                                                  pad_token=pad_token)
         for i in range(len(itrex_generate_ids)):
             self.assertListEqual(pt_generate_ids[i], itrex_generate_ids[i])

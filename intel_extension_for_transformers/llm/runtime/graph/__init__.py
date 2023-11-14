@@ -15,10 +15,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from pathlib import Path
 from transformers import AutoConfig
 from intel_extension_for_transformers.llm.runtime.graph.scripts.convert import convert_model
 import torch
+
 model_maps = {"gpt_neox": "gptneox", "gpt_bigcode": "starcoder"}
+
 
 class Model:
     def __init__(self):
@@ -61,26 +64,33 @@ class Model:
             raise TypeError("Unspported model type {}!".format(model_name))
         self.module = cpp_model
 
-    def init(self, model_name, **kwargs):
+    def init(self, model_name, quantized_weight_path="", **kwargs):
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
         model_type = model_maps.get(config.model_type, config.model_type)
         if model_type == "chatglm" and "chatglm2" in config._name_or_path:
             model_type = "chatglm2"
         self.__import_package(model_type)
 
+        if quantized_weight_path:  # use cached quantized weight
+            self.model_type = model_type
+            self.bin_file = quantized_weight_path
+            return
+
+        Path.mkdir(Path("out"), exist_ok=True)
+
         # 1. convert model
-        fp32_bin = "ne_{}_f32.bin".format(model_type)
+        fp32_bin = f"out/ne_{model_type}_f32.bin"
         convert_model(model_name, fp32_bin, "f32")
         assert os.path.exists(fp32_bin), "Fail to convert pytorch model"
 
         # 2. quant model
-        quant_bin = "ne_{}_q.bin".format(model_type)
-        self.module.Model.quant_model(model_path = fp32_bin, out_path = quant_bin, **kwargs)
+        quant_bin = f"out/ne_{model_type}_q.bin"
+        self.module.Model.quant_model(model_path=fp32_bin, out_path=quant_bin, **kwargs)
         assert os.path.exists(quant_bin), "Fail to quantize model"
-        
+
         self.model_type = model_type
         self.bin_file = quant_bin
-        
+
         # clean
         os.remove(fp32_bin)
 
@@ -91,9 +101,7 @@ class Model:
 
     def quant_model(self, model_name, model_path, out_path, **kwargs):
         self.__import_package(model_name)
-        self.module.Model.quant_model(model_path = model_path,
-                                    out_path = out_path, **kwargs)
-
+        self.module.Model.quant_model(model_path=model_path, out_path=out_path, **kwargs)
 
     def generate(self, input_ids, streamer=None, interactive=False, ignore_prompt=False, **kwargs):
         if self.model is None:
@@ -110,7 +118,7 @@ class Model:
 
         beam_search = False
         if ("num_beams" in kwargs and kwargs["num_beams"] > 1) and not \
-            kwargs.get("do_sample", False):
+                kwargs.get("do_sample", False):
             beam_search = True
         if not beam_search:
             # TODO support multi batch
@@ -124,21 +132,31 @@ class Model:
                 streamer.put(input_ids)
             if interactive:
                 self.model.reset_token_end()
+            out = self.model.generate(input_ids=input_ids.tolist()[0])
             while not self.is_token_end():
-                out = self.model.generate(input_ids = input_ids.tolist()[0])
+                out = self.model.generate()  # next-token stage will use previous output
                 if len(out) == 0:
                     break
                 streamer.put(torch.tensor([out]))
                 ret[0].extend(out)
             streamer.end()
         else:
-            response = self.model.generate_tokens(input_ids = input_ids.tolist())
+            response = self.model.generate_tokens(input_ids=input_ids.tolist())
             assert (len(ret) == len(response))
             for i in range(len(response)):
                 ret[i].extend(response[i])
-        
+
         self.generate_round += 1
         return ret
 
     def is_token_end(self):
         return self.model.is_token_end()
+
+    def __call__(self, input_ids, reinit=False, **kwargs):
+        if self.model is None:
+            self.init_from_bin(self.model_type, self.bin_file, **kwargs)
+            self.generate_round = 0
+        elif reinit:
+            self.model.reinit()
+            self.generate_round = 0
+        return self.model.evaluate(input_ids.tolist()[0])

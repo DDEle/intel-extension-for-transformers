@@ -5,6 +5,7 @@
 
 *.pyc
 .vscode
+.vs
 .idea
 /venv/
 */__pycache__

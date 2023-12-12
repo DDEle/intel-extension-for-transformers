@@ -113,7 +113,9 @@ inline float mha_exp_ref(float x) {
   const float z = std::floor(x1);
   const float f = x1 - z;
   constexpr std::array<float, 3> coeff{0.240226507f, 0.452920674f, 0.713483036f};
-  return ldexpf(coeff[0] * f * f + coeff[1] * f + coeff[2], z);  // same as a * std::pow(2, z) but more precise
+
+  // same as a * std::pow(2, z) but more precise
+  return ldexpf(coeff[0] * f * f + coeff[1] * f + coeff[2], static_cast<int>(z));
 #else
   return expf(x)
 #endif
@@ -691,9 +693,9 @@ class MHAInterface {
     // prepare parallel scheduler for packed weight
     using Scheduler2D = typename jblas::parallel::Scheduler2D;
     using ThreadProblem2D = typename jblas::parallel::ThreadProblem2D;
-    const auto schK = p.step_k_head_size == 1
-                          ? Scheduler2D({th.num_threads(), {num_heads, p.sl_kv}, {1, GemmQK::NTILE}})
-                          : Scheduler2D({th.num_threads(), {num_heads, p.head_size}, {1, GemmQK::KTILE}});
+    const auto&& schK = p.step_k_head_size == 1
+                            ? Scheduler2D({th.num_threads(), {num_heads, p.sl_kv}, {1, GemmQK::NTILE}})
+                            : Scheduler2D({th.num_threads(), {num_heads, p.head_size}, {1, GemmQK::KTILE}});
     const auto schV = Scheduler2D({th.num_threads(), {num_heads, p.sl_kv}, {1, GemmPV::KTILE}});
 
     const MHAProblem problem = {p.batch_size, p.head_num, p.heads_kv, p.head_size, p.sl_q, p.sl_kv};
@@ -1011,8 +1013,9 @@ class ScaleTrackMax<ISA_T, int32_t, float> {
     float alibi_slope;  // m-factor in the alibi paper for current head: https://arxiv.org/abs/2108.12409
   };
 
-  JBLAS_CODE forward(const SType* src, const int src_step, const int M_offset, const int N_offset, const int M,
-                     const int N, const Param& p, void* /* tmpcache */, size_t /* cachesize */) const {
+  JBLAS_CODE forward(  // NOLINT [build/include_what_you_use]
+      const SType* src, const int src_step, const int M_offset, const int N_offset, const int M, const int N,
+      const Param& p, void* /* tmpcache */, size_t /* cachesize */) const {
     assert(("alibi not supported!", p.alibi_slope == 0.f));
     const auto dst = p.dst + M_offset * p.ld_dst + N_offset;
     const auto dst_max = p.dst_max + M_offset;
@@ -1103,21 +1106,64 @@ class WeightForwardNTile48 {
     return JblasSuccess;
   }
 };
+#if CompileAVX512F()
+template <class _GemmCore_T, JBLAS_ISA ISA_T>
+class WeightCvtBF16NTile48 {
+ public:
+  using BType = typename _GemmCore_T::BType;
+  using SType = bf16;
+  struct Param {
+    const SType* B;
+    int ldb;
+    bool is_padded;
+  };
+  WeightCvtBF16NTile48() {}
+  JBLAS_CODE getWeight(BType** dst_ptr, int* dst_step, const Param& p, int k_size, int n_size, int k_offset,
+                       int n_offset, void* /* tmpcache */, size_t /* cachesize */) {
+    assert(p.is_padded);
+    const auto src = const_cast<SType*>(p.B) + k_offset * 48 + n_offset * p.ldb;
+    const auto dst = *dst_ptr;
+    *dst_step = _GemmCore_T::NTILE;
+    if constexpr (std::is_same_v<BType, float> && std::is_same_v<SType, utils::bf16>) {
+      assert(n_size <= _GemmCore_T::NTILE);
+      assert(n_size <= 48);
+      assert(n_offset % 2 == 0 && k_offset % 2 == 0);
+      // static const auto mask_lo = _cvtu32_mask32(0x55555555U);
+      static const auto mask_hi = _cvtu32_mask32(0xaaaaaaaaU);
+      for (int i = 0; i < k_size; i += 2) {
+        for (int j = 0; j < n_size; j += 16) {
+          const auto cur_src = src + i * 48 + j * 2;
+          const auto cur_dst = dst + i * 48 + j;
+          const auto src_lo = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_loadu_epi16(cur_src), 16U));
+          const auto src_hi = _mm512_castsi512_ps(_mm512_maskz_loadu_epi16(mask_hi, cur_src));
+          _mm512_store_ps(cur_dst + 0, src_lo);
+          _mm512_store_ps(cur_dst + 48, src_hi);
+        }
+      }
+    } else {
+      assert(0);
+    }
+    return JblasSuccess;
+  }
+};
+#endif
 template <class SRC_T, class DST_T>
 struct InplacePrecomputeMaxSoftmax {
   // nsize is the staring n-size when causal mask enabled
   // src and dst cam be on the same address if sizeof(SRC_T) >= sizeof(DST_T) and ld is correctly set
   // s_max and expsum cam be on the same address
-  static void forward(int m_size, int n_size, int n_pad_size, bool is_causal, SRC_T* src, DST_T* dst,
-                      const SRC_T* s_max, float* expsum, int ld_src, int ld_dst) {
+  static void forward(  // NOLINT [build/include_what_you_use]
+      int m_size, int n_size, int n_pad_size, bool is_causal, SRC_T* src, DST_T* dst, const SRC_T* s_max, float* expsum,
+      int ld_src, int ld_dst) {
     assert(false);
   }
 };
 #if CompileFP16()
 template <>
 struct InplacePrecomputeMaxSoftmax<float, fp16> {
-  static void forward(int m_size, int n_size, int n_pad_size, bool is_causal, float* src, fp16* dst, const float* s_max,
-                      float* expsum, int ld_src, int ld_dst) {
+  static void forward(  // NOLINT [build/include_what_you_use]
+      int m_size, int n_size, int n_pad_size, bool is_causal, float* src, fp16* dst, const float* s_max, float* expsum,
+      int ld_src, int ld_dst) {
     for (int ii = 0; ii < m_size; ++ii) {
       const auto i_src = src + ii * ld_src;
       const auto i_dst = dst + ii * ld_dst;
@@ -1166,8 +1212,9 @@ struct InplacePrecomputeMaxSoftmax<float, fp16> {
 #if CompileBF16()
 template <>
 struct InplacePrecomputeMaxSoftmax<float, bf16> {
-  static void forward(int m_size, int n_size, int n_pad_size, bool is_causal, float* src, bf16* dst, const float* s_max,
-                      float* expsum, int ld_src, int ld_dst) {
+  static void forward(  // NOLINT [build/include_what_you_use]
+      int m_size, int n_size, int n_pad_size, bool is_causal, float* src, bf16* dst, const float* s_max, float* expsum,
+      int ld_src, int ld_dst) {
     for (int ii = 0; ii < m_size; ++ii) {
       const auto i_src = src + ii * ld_src;
       const auto i_dst = dst + ii * ld_dst;
@@ -1222,10 +1269,60 @@ struct InplacePrecomputeMaxSoftmax<float, bf16> {
 };
 #endif
 
+#if CompileAVX512F()
+template <>
+struct InplacePrecomputeMaxSoftmax<float, float> {
+  static void forward(  // NOLINT [build/include_what_you_use]
+      int m_size, int n_size, int n_pad_size, bool is_causal, float* src, float* dst, const float* s_max, float* expsum,
+      int ld_src, int ld_dst) {
+    for (int ii = 0; ii < m_size; ++ii) {
+      const auto i_src = src + ii * ld_src;
+      const auto i_dst = dst + ii * ld_dst;
+      const auto curr_n_size = n_size + (is_causal ? ii : 0);
+      const auto v_mask = _cvtu32_mask16((1U << (curr_n_size % 16)) - 1);
+      {  // subtract max
+        const auto row_max = _mm512_set1_ps(s_max[ii]);
+        for (int jj = 0; jj < curr_n_size; jj += 16) {  // should be fine to do extra work on idx >= curr_n_size
+          _mm512_storeu_ps(i_src + jj, _mm512_sub_ps(_mm512_loadu_ps(i_src + jj), row_max));
+        }
+      }
+      auto v_sum = _mm512_setzero_ps();
+      {  // exp & sum
+        int jj = 0;
+        for (; jj < curr_n_size / 16 * 16; jj += 16) {
+          const auto v_exp = exp_ps_0_1(_mm512_loadu_ps(i_src + jj));
+          v_sum = _mm512_add_ps(v_sum, v_exp);
+          _mm512_storeu_ps(i_src + jj, v_exp);
+        }
+        if (jj < curr_n_size) {
+          const auto v_exp = exp_ps_0_1(_mm512_loadu_ps(i_src + jj));  // should be fine to load some extra
+          v_sum = _mm512_mask_add_ps(v_sum, v_mask, v_sum, v_exp);
+          _mm512_storeu_ps(i_src + jj, v_exp);  // should be fine to store some extra
+        }
+        expsum[ii] = _mm512_reduce_add_ps(v_sum);
+        v_sum = _mm512_set1_ps(expsum[ii]);
+      }
+      {  // scale & store
+        int jj = 0;
+        for (; jj < padto_le(curr_n_size, 16); jj += 16) {
+          _mm512_store_ps(i_dst + jj, _mm512_div_ps(_mm512_loadu_ps(i_src + jj), v_sum));
+        }
+        if (jj < curr_n_size) {
+          _mm512_store_ps(i_dst + jj, _mm512_maskz_div_ps(v_mask, _mm512_loadu_ps(i_src + jj), v_sum));
+          jj += 16;
+        }
+        if (jj < n_pad_size) memset(i_dst + jj, 0, sizeof(bf16) * (n_pad_size - jj));
+      }
+    }
+  }
+};
+#endif
+
 template <>
 struct InplacePrecomputeMaxSoftmax<float, uint8_t> {
-  static void forward(int m_size, int n_size, int n_pad_size, bool is_causal, float* src, uint8_t* dst, float* s_max,
-                      float* expsum, int ld_src, int ld_dst) {
+  static void forward(  // NOLINT [build/include_what_you_use]
+      int m_size, int n_size, int n_pad_size, bool is_causal, float* src, uint8_t* dst, float* s_max, float* expsum,
+      int ld_src, int ld_dst) {
     for (int ii = 0; ii < m_size; ++ii) {
       const auto i_src = src + ii * ld_src;
       const auto i_dst = dst + ii * ld_dst;
@@ -1343,7 +1440,9 @@ class MHAStableInterface {
     const bool is_alibi = (p.attn_flags & NE_ATTN_FLAG_IS_ALIBI8) != 0;
     const bool prefer_fp32 = (p.attn_flags & NE_ATTN_FLAG_PREFER_FP32) != 0;
 
-    assert(("prefer_fp32 not implemented!", !prefer_fp32));
+    assert(("prefer_fp32 not followed!",  //
+            !prefer_fp32 || (GemmQK::COMP == jblas::gemm::CompType::COMP_FP32 &&
+                             GemmPV::COMP == jblas::gemm::CompType::COMP_FP32)));
     assert(("qlen should be no greater then klen/vlen!", !is_causal || p.sl_q <= p.sl_kv));
     assert(("head_num must be a multiple of heads_kv!", p.head_num % p.heads_kv == 0));
     const auto group_heads = p.head_num / p.heads_kv;
@@ -1664,7 +1763,23 @@ template <>
 void jblas_fusion_attn_forward<float, bf16, bf16, float>(const attn_fwd_args_t<float, bf16, bf16, float>& params) {
   GetCPUDevice();
   const auto pth = ne_jblas::ne_threading::get();
-  if (/* params.sl_q > 4 &&  */ _cd->AMX_BF16()) {         // TODO(Yi): add vdpbf16ps impl
+  if ((params.attn_flags & NE_ATTN_FLAG_PREFER_FP32) != 0) {
+    using GemmKernelBF16TrackMax = ::LauncherBaseWeight<   //
+        JblasAMX_BF16,                                     //
+        jblas::gemm::SCoreRowNAvx512f<48, 8>,              //
+        jblas::prologue_a::gemm::ActivationBase,           //
+        ::WeightCvtBF16NTile48,                            //
+        ::ScaleTrackMaxFp32Fp32>;                          //
+    using GemmKernelBF16 = ::LauncherBaseWeight<           //
+        JblasAMX_BF16,                                     //
+        jblas::gemm::SCoreRowNAvx512f<48, 8>,              //
+        ::ActivationIdentity,                              // pretty sure we have enough paddings for P-matrix
+        ::WeightCvtBF16NTile48,                            //
+        jblas::epilogue::gemm::AccumulatorWriteBackFp32>;  //
+    static MHAStableInterface<GemmKernelBF16TrackMax, GemmKernelBF16> mha;
+    [[maybe_unused]] const auto ret = mha.compute(params, *pth);
+    assert(ret == JblasSuccess);
+  } else if (/* params.sl_q > 4 &&  */ _cd->AMX_BF16()) {  // TODO(Yi): add vdpbf16ps impl
     using GemmKernelBF16TrackMax = ::LauncherBaseWeight<   //
         JblasAMX_BF16,                                     //
         jblas::gemm::HCoreRowNAmxbf16<48, 16>,             //
@@ -1872,12 +1987,12 @@ void jblas_reordered_attn_fp32_batch_kv_info(const kv_shape_t* params, kv_cache_
   out->stride_k_head_size = sizeof(bf16) * 48;
   out->stride_k_sl = sizeof(bf16) * padto(static_cast<int>(p.head_size), 32);
   out->stride_k_head_num = out->stride_k_sl * padto(static_cast<int>(p.sl_kv_max), 48);
-  out->k_bytes = out->stride_k_head_num * p.heads_kv;
+  out->k_bytes = out->stride_k_head_num * static_cast<size_t>(p.heads_kv);
 
   out->stride_v_sl = sizeof(bf16) * 48;
   out->stride_v_head_size = sizeof(bf16) * padto(static_cast<int>(p.sl_kv_max), 32);
   out->stride_v_head_num = out->stride_v_head_size * padto(static_cast<int>(p.head_size), 48);
-  out->v_bytes = out->stride_v_head_num * p.heads_kv;
+  out->v_bytes = out->stride_v_head_num * static_cast<size_t>(p.heads_kv);
 }
 
 void jblas_reordered_attn_fp32_forward(const jblas_reordered_attn_fp32_fp32_fwd_args_t* params) {
@@ -2158,21 +2273,42 @@ class TestMhaDese {
     ret_ok &= test_case<float, fp16, fp16, float>({1, 1, 1, 64, 64, 64}, NE_ATTN_FLAG_IS_CAUSAL, true);
 #endif
 
-    const auto s8layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK4;
-    ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({1, 1, 1, 32, 128, 64}, NE_ATTN_FLAG_NONE, false, s8layout);
-    ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({2, 5, 5, 32, 64, 128}, NE_ATTN_FLAG_NONE, false, s8layout);
-    ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({2, 5, 5, 80, 128, 77}, NE_ATTN_FLAG_NONE, false, s8layout);
-    ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({1, 1, 1, 256, 63, 63}, NE_ATTN_FLAG_NONE, false, s8layout);
-    ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({3, 4, 4, 256, 1, 384}, NE_ATTN_FLAG_NONE, false, s8layout);
-    ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({1, 1, 1, 64, 64, 64}, NE_ATTN_FLAG_IS_CAUSAL, false, s8layout);
+    {
+      const auto BA48b4a = ATTN_FWD_LAYOUT_NTILE48_ROWPACK4;
+      ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({1, 1, 1, 32, 128, 64}, NE_ATTN_FLAG_NONE, false, BA48b4a);
+      ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({2, 5, 5, 32, 64, 128}, NE_ATTN_FLAG_NONE, false, BA48b4a);
+      ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({2, 5, 5, 80, 128, 77}, NE_ATTN_FLAG_NONE, false, BA48b4a);
+      ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({1, 1, 1, 256, 63, 63}, NE_ATTN_FLAG_NONE, false, BA48b4a);
+      ret_ok &= test_case<int8_t, int8_t, int8_t, int8_t>({3, 4, 4, 256, 1, 384}, NE_ATTN_FLAG_NONE, false, BA48b4a);
+      ret_ok &=
+          test_case<int8_t, int8_t, int8_t, int8_t>({1, 1, 1, 64, 64, 64}, NE_ATTN_FLAG_IS_CAUSAL, false, BA48b4a);
+    }
 
-    const auto BA48b2a = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
-    ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 32, 128, 64}, NE_ATTN_FLAG_NONE, false, BA48b2a, 1e-3f);
-    ret_ok &= test_case<float, bf16, bf16, float>({2, 5, 5, 32, 64, 128}, NE_ATTN_FLAG_NONE, false, BA48b2a, 1e-3f);
-    ret_ok &= test_case<float, bf16, bf16, float>({2, 5, 5, 80, 128, 77}, NE_ATTN_FLAG_NONE, false, BA48b2a, 1e-3f);
-    ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 256, 63, 63}, NE_ATTN_FLAG_NONE, false, BA48b2a, 1e-3f);
-    ret_ok &= test_case<float, bf16, bf16, float>({3, 4, 4, 256, 1, 384}, NE_ATTN_FLAG_NONE, false, BA48b2a, 1e-3f);
-    ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 64, 64, 64}, NE_ATTN_FLAG_IS_CAUSAL, false, BA48b2a, 1e-3f);
+    {
+      const auto BA48b2a = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
+      int flags = NE_ATTN_FLAG_NONE;
+      ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 32, 128, 64}, flags, false, BA48b2a, 1e-3f);
+      ret_ok &= test_case<float, bf16, bf16, float>({2, 5, 5, 32, 64, 128}, flags, false, BA48b2a, 1e-3f);
+      ret_ok &= test_case<float, bf16, bf16, float>({2, 5, 5, 80, 128, 77}, flags, false, BA48b2a, 1e-3f);
+      ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 256, 63, 63}, flags, false, BA48b2a, 1e-3f);
+      ret_ok &= test_case<float, bf16, bf16, float>({3, 4, 4, 256, 1, 384}, flags, false, BA48b2a, 1e-3f);
+
+      flags |= NE_ATTN_FLAG_IS_CAUSAL;
+      ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 64, 64, 64}, flags, false, BA48b2a, 1e-3f);
+    }
+
+    {  // PREFER_FP32
+      const auto BA48b2a = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
+      int flags = NE_ATTN_FLAG_PREFER_FP32;
+      ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 32, 128, 64}, flags, false, BA48b2a, 1e-3f);
+      ret_ok &= test_case<float, bf16, bf16, float>({2, 5, 5, 32, 64, 128}, flags, false, BA48b2a, 1e-3f);
+      ret_ok &= test_case<float, bf16, bf16, float>({2, 5, 5, 80, 128, 77}, flags, false, BA48b2a, 1e-3f);
+      ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 256, 63, 63}, flags, false, BA48b2a, 1e-3f);
+      ret_ok &= test_case<float, bf16, bf16, float>({3, 4, 4, 256, 1, 384}, flags, false, BA48b2a, 1e-3f);
+
+      flags |= NE_ATTN_FLAG_IS_CAUSAL;
+      ret_ok &= test_case<float, bf16, bf16, float>({1, 1, 1, 64, 64, 64}, flags, false, BA48b2a, 1e-3f);
+    }
 
     ret_ok &= test_reorder_pipe<float, float, float, float>({1, 1, 1, 32, 128, 64}, 64, NE_ATTN_FLAG_NONE);
     ret_ok &= test_reorder_pipe<float, float, float, float>({2, 5, 5, 32, 64, 128}, 256, NE_ATTN_FLAG_NONE);
@@ -2215,8 +2351,9 @@ class TestMhaDese {
     assert(("GQA not supported!", s.head_num == s.heads_kv));
 
     printf("\ntest_case: %s\t", __PRETTY_FUNCTION__);
-    printf("bs_%d hn_%d hkv_%d hs_%d sl_q_%d sk_kv_%d %s %s\n", batch_size, head_num, heads_kv, head_size, sl_q, sl_kv,
-           flags & NE_ATTN_FLAG_IS_CAUSAL ? "maksed" : "unmask", flags & NE_ATTN_FLAG_IS_ALIBI8 ? "alibi8" : "");
+    printf("bs_%d hn_%d hkv_%d hs_%d sl_q_%d sk_kv_%d %s %s %s\n", batch_size, head_num, heads_kv, head_size, sl_q,
+           sl_kv, flags & NE_ATTN_FLAG_IS_CAUSAL ? "maksed" : "unmask", flags & NE_ATTN_FLAG_IS_ALIBI8 ? "alibi8" : "",
+           flags & NE_ATTN_FLAG_PREFER_FP32 ? "FP32" : "");
 
     const auto NTILE = kv_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4   ? 48
                        : kv_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2 ? 48
@@ -2347,8 +2484,9 @@ class TestMhaDese {
     assert(("head_num must be a multiple of heads_kv!", head_num % heads_kv == 0));
 
     printf("\ntest_case: %s\t", __PRETTY_FUNCTION__);
-    printf("bs_%d hn_%d hkv_%d hs_%d sl_q_%d sk_kv_%d %s %s\n", batch_size, head_num, heads_kv, head_size, sl_q, sl_kv,
-           flags & NE_ATTN_FLAG_IS_CAUSAL ? "maksed" : "unmask", flags & NE_ATTN_FLAG_IS_ALIBI8 ? "alibi8" : "");
+    printf("bs_%d hn_%d hkv_%d hs_%d sl_q_%d sk_kv_%d %s %s %s\n", batch_size, head_num, heads_kv, head_size, sl_q,
+           sl_kv, flags & NE_ATTN_FLAG_IS_CAUSAL ? "maksed" : "unmask", flags & NE_ATTN_FLAG_IS_ALIBI8 ? "alibi8" : "",
+           flags & NE_ATTN_FLAG_PREFER_FP32 ? "FP32" : "");
 
     assert(sl_kv_max >= sl_kv);
 

@@ -658,8 +658,11 @@ class MHAInterface {
 
     const bool is_causal = (p.attn_flags & NE_ATTN_FLAG_IS_CAUSAL) != 0;
     const bool is_alibi = (p.attn_flags & NE_ATTN_FLAG_IS_ALIBI8) != 0;
-    assert(!is_causal || p.sl_q <= p.sl_kv);
+    const bool prefer_fp32 = (p.attn_flags & NE_ATTN_FLAG_PREFER_FP32) != 0;
+
+    assert(("qlen should be no greater then klen/vlen!", !is_causal || p.sl_q <= p.sl_kv));
     assert(("alibi not supported!", !is_alibi));
+    assert(("prefer_fp32 not implemented!", !prefer_fp32));
     assert(("GQA not supported!", p.head_num == p.heads_kv));
     const auto sl_diff = p.sl_kv - p.sl_q;
 
@@ -1338,7 +1341,10 @@ class MHAStableInterface {
     jblas::device::CpuBase cb;                         // Note: DO NOT use cb.mNumThreads; use th.num_threads() instead
     const bool is_causal = (p.attn_flags & NE_ATTN_FLAG_IS_CAUSAL) != 0;
     const bool is_alibi = (p.attn_flags & NE_ATTN_FLAG_IS_ALIBI8) != 0;
-    assert(!is_causal || p.sl_q <= p.sl_kv);
+    const bool prefer_fp32 = (p.attn_flags & NE_ATTN_FLAG_PREFER_FP32) != 0;
+
+    assert(("prefer_fp32 not implemented!", !prefer_fp32));
+    assert(("qlen should be no greater then klen/vlen!", !is_causal || p.sl_q <= p.sl_kv));
     assert(("head_num must be a multiple of heads_kv!", p.head_num % p.heads_kv == 0));
     const auto group_heads = p.head_num / p.heads_kv;
     const auto sl_diff = p.sl_kv - p.sl_q;
@@ -1683,6 +1689,7 @@ template <typename Q_T, typename K_T, typename V_T, typename DST_T>
 void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& p) {
   const bool is_causal = (p.attn_flags & NE_ATTN_FLAG_IS_CAUSAL) != 0;
   const bool is_alibi = (p.attn_flags & NE_ATTN_FLAG_IS_ALIBI8) != 0;
+  const bool prefer_fp32 = (p.attn_flags & NE_ATTN_FLAG_PREFER_FP32) != 0;
   assert(!is_causal || p.sl_q <= p.sl_kv);
   assert(("head_num must be a multiple of heads_kv!", p.head_num % p.heads_kv == 0));
   const auto group_heads = p.head_num / p.heads_kv;
@@ -1698,10 +1705,11 @@ void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& 
   std::fill_n(p.tmp, workspace_size, 'f');
 #endif
   const bool IS_BF16_GEMM =
-      (std::is_same<Q_T, float>::value && std::is_same<K_T, fp16>::value && std::is_same<V_T, fp16>::value &&
-       std::is_same<DST_T, float>::value && (!MHA_PREFER_AVX512FP16 || (p.step_k_head_size == 1))) ||
-      (std::is_same<Q_T, float>::value && std::is_same<K_T, bf16>::value && std::is_same<V_T, bf16>::value &&
-       std::is_same<DST_T, float>::value);
+      !prefer_fp32 &&  //
+      ((std::is_same<Q_T, float>::value && std::is_same<K_T, fp16>::value && std::is_same<V_T, fp16>::value &&
+        std::is_same<DST_T, float>::value && (!MHA_PREFER_AVX512FP16 || (p.step_k_head_size == 1))) ||
+       (std::is_same<Q_T, float>::value && std::is_same<K_T, bf16>::value && std::is_same<V_T, bf16>::value &&
+        std::is_same<DST_T, float>::value));
   assert(p.Q_layout == ATTN_FWD_LAYOUT_PLAIN);
   assert(p.dst_layout == ATTN_FWD_LAYOUT_PLAIN);
   assert((p.K_layout == ATTN_FWD_LAYOUT_PLAIN ||
@@ -1778,10 +1786,10 @@ void jblas_fusion_attn_forward_ref(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& 
         if (std::is_same<V_T, int8_t>::value) {
           for (int j = 0; j < unmasked; ++j) curr_row[j] = roundf(curr_row[j] * UINT8_MAX) / UINT8_MAX / exp_sum;
         } else {
-          for (int j = 0; j < unmasked; ++j) curr_row[j] /= exp_sum;
-        }
-        if (IS_BF16_GEMM) {
-          for (int j = 0; j < unmasked; ++j) curr_row[j] = static_cast<float>(static_cast<bf16>(curr_row[j]));
+          for (int j = 0; j < unmasked; ++j) {
+            curr_row[j] /= exp_sum;
+            if (IS_BF16_GEMM) curr_row[j] = static_cast<float>(static_cast<bf16>(curr_row[j]));
+          }
         }
 
         // P x V

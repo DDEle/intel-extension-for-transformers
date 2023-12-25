@@ -29,13 +29,13 @@ enum llama_model {
 static const model_scratch llama_mem_req(int n_layers) {
   switch (n_layers) {
     case 32:
-      return {512ull * MB, 512ull * MB, 1026ull * MB};
+      return {512ull * 2 * MB, 512ull * 2 * MB, 1026ull * 2 * MB};
     case 40:
-      return {512ull * MB, 512ull * MB, 1608ull * MB};
+      return {512ull * 2 * MB, 512ull * 2 * MB, 1608ull * 2 * MB};
     case 60:
-      return {512ull * MB, 512ull * MB, 3124ull * MB};
+      return {512ull * 2 * MB, 512ull * 2 * MB, 3124ull * 2 * MB};
     case 80:
-      return {2048ull * MB, 2048ull * MB, 10240ull * MB};
+      return {2048ull * 2 * MB, 2048ull * 2 * MB, 10240ull * 2 * MB};
     default:
       MODEL_ASSERT(false);
   }

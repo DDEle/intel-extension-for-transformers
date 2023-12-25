@@ -100,7 +100,7 @@ static bool kv_cache_init(const struct model_hparams& hparams, struct model_kv_c
   const auto wtype_alloc = wtype == NE_TYPE_JBLAS ? NE_TYPE_I8 : wtype;
 
   if (model) {  // non-null param of model for kv-cache as components of model->layers[il]
-    for (int il = 0; il < hparams.n_layer; ++il) {
+    for (int il = 0; il < n_layer; ++il) {
       auto& k_cache = model->layers[il].k_cache;
       auto& v_cache = model->layers[il].v_cache;
       if (wtype == NE_TYPE_F16) {  // chatglm does not support fp32 kv-cache in original impl of chatglm_util.cpp
@@ -1055,7 +1055,6 @@ void ne_common_quantize(const int nthread, const quant_params_internal& params, 
   }
   printf("size = %8.2f MB -> %8.2f MB\n", tensor.size / 1024.0 / 1024.0, new_size / 1024.0 / 1024.0);
 
-__WRITE_FILE:
   size_org += tensor.size;
   size_new += new_size;
   saver.write_tensor(tensor, new_type, new_data, new_size);

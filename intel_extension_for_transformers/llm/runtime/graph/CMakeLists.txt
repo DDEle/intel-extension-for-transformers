@@ -54,14 +54,12 @@ option(NE_SANITIZE_UNDEFINED     "neural_engine: enable undefined sanitizer"    
 # instruction set specific
 option(NE_AVX                    "neural_engine: enable AVX"                                     ON)
 option(NE_AVX2                   "neural_engine: enable AVX2"                                    ON)
+option(NE_F16C                   "neural_engine: enable F16C"                                    ON)
 option(NE_AVX512                 "neural_engine: enable AVX512"                                  OFF)
 option(NE_AVX512_VBMI            "neural_engine: enable AVX512-VBMI"                             OFF)
 option(NE_AVX512_VNNI            "neural_engine: enable AVX512-VNNI"                             OFF)
 option(NE_FMA                    "neural_engine: enable FMA"                                     ON)
 option(NE_AMX                    "neural_engine: enable AMX"                                     OFF)
-
-
-option(NE_F16C                   "neural_engine: enable F16C"                                    ON)
 
 # 3rd party libs
 option(NE_ONEDNN                 "neural_engine: use oneDNN"                                     ON)
@@ -104,9 +102,20 @@ endif()
 
 if (MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
+    add_compile_options(/wd4244 /wd4267)  # possible loss of data
+    add_compile_options(/wd4018)  # '>': signed/unsigned mismatch
     if (BUILD_SHARED_LIBS)
         set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
     endif()
+
+    # 'std::codecvt_utf8<wchar_t,1114111,(std::codecvt_mode)0>': warning STL4017: std::wbuffer_convert,
+    # std::wstring_convert, and the <codecvt> header (containing std::codecvt_mode, std::codecvt_utf8,
+    # std::codecvt_utf16, and std::codecvt_utf8_utf16) are deprecated in C++17. (The std::codecvt class template is NOT
+    # deprecated.) The C++ Standard doesn't provide equivalent non-deprecated functionality; consider using
+    # MultiByteToWideChar() and WideCharToMultiByte() from <Windows.h> instead. You can define
+    # _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING or _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS to suppress this
+    # warning.
+    add_compile_definitions(_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 endif()
 
 if (NE_LTO)

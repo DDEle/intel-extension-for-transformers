@@ -321,7 +321,7 @@ bool gpt_params_parse(int argc, char** argv, gpt_params& params) {  // NOLINT
         } else {
           throw std::exception();
         }
-      } catch (const std::exception& e) {
+      } catch (const std::exception&) {
         invalid_param = true;
         break;
       }
